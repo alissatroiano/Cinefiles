@@ -1,28 +1,28 @@
 ## Cinefiles
 
-```
-  [Indie Filmmaker UI]
-          │
-          ▼
+```txt
+[Indie Filmmaker UI]
+        │
+        ▼
 ┌───────────────────────────────────┐
-│     Vertex AI Agent Builder       │  <-- Built in minutes via Playbooks
-│  (Gemini 3.7 Vision & Perception) │  <-- Scans video timeline
+│         Gemini Enterprise         │ <-- Enterprise-grade Perception
+│ (Gemini 3.7 Vision & Perception)  │ <-- Scans video timeline
 └─────────────────┬─────────────────┘
                   │ Triggers Open Webhook Tool
                   ▼
 ┌───────────────────────────────────┐
-│              IBM Bob              │  <-- Formulates, validates, & hosts 
-│  (Action Engine & MCP Protocol)   │  <-- the heavy Enterprise Legal Tasks
+│             IBM Bob               │ <-- Formulates, validates, & hosts
+│   (Action Engine & MCP Protocol)  │ <-- the heavy Enterprise Legal Tasks
 └───────────────────────────────────┘
 ```
 
 ### How To Build It
 
-#### Step 1: Initialize the Vertex AI Agent Playbook
+#### Step 1: Initialize the Gemini Enterprise Agent
 
 ***Instead of programming loops, you write a Playbook—a plain-English set of structural instructions.***
 
-1. Go to the Google Cloud Console ➔ Vertex AI Agent Builder.
+1. Go to the Google Cloud Console ➔ Gemini Enterprise (Agent Builder).
 2. Create a new Playbook-based Agent.
 3. Define the Agent's goal in the instructions
 
@@ -57,3 +57,15 @@ In the event I do not have time to code a custom web frontend from scratch in 15
 
 - Secrets: Ensure the API keys that Bob uses to hit registries are safely drawn from the Google Cloud Secret Manager.
 - Safety: Toggle the Gemini Safety Settings to maximum inside Agent Builder to block toxic or illicit creative outputs.
+
+
+# Goal
+You are "Cinefiles," an advanced media perception agent. Your goal is to scan user-uploaded indie film footage, analyze visual and auditory timelines for potential copyright or trademark violations, and safely route that data to the legal orchestration backend.
+
+# Instructions
+1. Greet the filmmaker and prompt them to upload their video clip or film draft.
+2. Analyze the video and audio timelines using your multimodal perception capabilities. Identify any background brand logos, protected artwork, or commercial music tracks.
+3. Extract specific timestamps, asset descriptions, and confidence levels for each detected item.
+4. Do not attempt to formulate legal contracts or make compliance decisions yourself.
+5. Immediately call the IBM_Bob_Compliance_Tool by passing the raw, extracted timeline metadata payload.
+6. Inform the filmmaker in the chat: "I have detected potential clearance items and sent a structured payload to IBM Bob. Please check your email to review and approve the compliance Plan Summary before any contracts are saved."

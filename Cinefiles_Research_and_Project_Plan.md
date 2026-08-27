@@ -1,0 +1,144 @@
+# Cinefiles — Market Research & 14-Day Hackathon Project Plan
+
+**Project:** Cinefiles  
+**Track:** Google Cloud Agentic Cinema Hackathon (IBM Partner Track)  
+**Repository:** [github.com/alissatroiano/cinefiles](https://github.com/alissatroiano/cinefiles)  
+**License:** MIT License (OSI-Approved, Permissive)  
+
+---
+
+## 1. Market Research & Problem Validation
+
+### The Hidden Bottleneck in Independent Filmmaking
+Independent filmmakers face existential legal risks from undetected, uncleared background intellectual property (IP). Standard production pipelines rely on manual script breakdowns and post-production legal reviews, which frequently miss micro-infringements:
+* **Background Apparel & Logos:** An extra wearing a Nike swoosh, a character holding a branded beverage, or a stylized logo on a storefront.
+* **Ambient Audio:** A Taylor Swift or commercial music track playing softly in the background of a coffee shop, bar, or street scene.
+* **Protected Artwork & Media:** Unlicensed paintings on set walls, movie posters in bedroom scenes, or television clips playing in the background.
+
+---
+
+### Economic Impact & Stat Analysis
+
+| Category | Typical Cost / Risk Impact | Source / Context |
+| :--- | :--- | :--- |
+| **Commercial Music Clearance** | **$10,000 – $500,000+** per track | Dual licensing required (Synchronization License + Master Use License). Premium tracks (e.g., Taylor Swift) command top-tier rates regardless of clip length. |
+| **Statutory Copyright Fines** | **$10,000 – $250,000** per work | Statutory damages range from $750–$30,000 for innocent infringement, escalating to **$150,000+** for willful infringement under 17 U.S.C. § 504. |
+| **Errors & Omissions (E&O) Blockers** | **100% Distribution Deal Failure** | E&O insurance is mandatory for film sales at major festivals (Sundance, TIFF, SXSW). Unclear IP results in coverage denial or prohibitive policy riders. |
+| **Post-Production Reshoots** | **$15,000 – $100,000+ per scene** | Re-assembling cast, crew, and location to reshoot an infringing background logo can consume up to **20% of an indie film's total budget**. |
+| **Standard Clearance Budgeting** | **1% – 5%** of production budget | Intended for planned media; unexpected background audio/visual breaches regularly double this allocation late in post-production. |
+
+---
+
+## 2. Devpost & Hackathon Rule Alignment
+
+### Rule Verification Summary
+* **Track:** IBM Partner Track ($7,500 1st Place / $4,500 2nd Place / $3,000 3rd Place)
+* **Required Partner Integration:** **IBM Bob** used as part of the development process to construct legal microservices, validation logic, and clearance workflow handlers.
+* **Required Google Cloud Stack:** **Gemini Enterprise / Agent Builder** (Playbooks, OpenAPI Webhook tools, Multimodal Perception), **Google Cloud Secret Manager**, and optional Python SDK (`google-adk` or `google-cloud-aiplatform`).
+* **License:** **MIT License** (Fully compliant — OSI-approved, unlimited commercial use).
+* **Submission Requirements:** 
+  1. Public GitHub repository with `LICENSE` file.
+  2. < 3-minute YouTube/Vimeo video demonstration.
+  3. Code repository showing actual runtime imports/calls to Google Cloud and IBM integration points.
+
+---
+
+## 3. Cinefiles System Architecture
+
+```
+[ Filmmaker UI / Agent Builder Web Chat Widget ]
+                        │
+                        ▼
+┌─────────────────────────────────────────────────┐
+│           Gemini Enterprise Agent               │ <-- Multimodal Timeline Scanning
+│    (Gemini 3.7 Vision & Audio Perception)       │ <-- Detects background logos & audio
+└───────────────────────┬─────────────────────────┘
+                        │ Triggers OpenAPI Webhook Tool
+                        ▼
+┌─────────────────────────────────────────────────┐
+│                IBM Bob Engine                   │ <-- Formulates risk scores, estimates
+│    (FastAPI Microservice / MCP Protocol)        │ <-- clearance fees, drafts PDF reports
+└─────────────────────────────────────────────────┘
+```
+
+---
+
+## 4. 14-Day Part-Time Execution Roadmap
+
+Designed for part-time work availability (10–12 hours/week) around family commitments.
+
+### Phase 1: IBM Bob Legal Engine (Days 1–4)
+* **Goal:** Build the clearance microservice backend via IBM Bob.
+* **Tasks:**
+  * Prompt IBM Bob: *"Build a FastAPI microservice that accepts video asset payloads (`asset_name`, `timestamp`, `confidence`, `detected_brand`), calculates clearance risk scores, queries a mock copyright database, and generates a PDF clearance summary."*
+  * Verify IBM Bob generates clean FastAPI code, Pydantic schemas, and unit tests.
+  * Implement human-in-the-loop validation status endpoint (`/approve-clearance`).
+
+### Phase 2: Gemini Enterprise Agent Setup (Days 5–8)
+* **Goal:** Build the multimodal perception agent in Google Cloud Console.
+* **Tasks:**
+  * In Vertex AI Agent Builder, create a new Playbook-based Agent.
+  * Configure system playbook instructions:
+    ```text
+    Scan uploaded video/audio timelines for background corporate logos, copyrighted visual art, and commercial background music. Extract precise timestamps and asset descriptions. Instantly call the IBM_Bob_Clearance_Tool webhook with structured metadata.
+    ```
+  * Register the OpenAPI tool schema generated by IBM Bob under Agent Builder Tools.
+
+### Phase 3: End-to-End Integration & Security (Days 9–11)
+* **Goal:** Wire the perception layer to the action engine securely.
+* **Tasks:**
+  * Store external API keys and secrets inside **Google Cloud Secret Manager**.
+  * Set up Gemini Safety Settings inside Agent Builder to maximum moderation levels.
+  * Test sample clips containing logos (e.g., Nike hoodie) and ambient audio tracks.
+
+### Phase 4: Web UI Deployment & Submission Assets (Days 12–14)
+* **Goal:** Package the application and record submission video.
+* **Tasks:**
+  * Deploy the Agent Builder Web Chat Interface widget directly to a simple static HTML wrapper or Replit app.
+  * Record a **< 3-minute video** demonstrating:
+    1. Uploading a scene with background IP.
+    2. Real-time timestamped detection by Gemini Enterprise.
+    3. Triggering IBM Bob's clearance backend and receiving the legal report draft.
+  * Verify GitHub repo ([github.com/alissatroiano/cinefiles](https://github.com/alissatroiano/cinefiles)) contains:
+    - `LICENSE` file (MIT).
+    - Code importing `google-adk` or `google-cloud-aiplatform`.
+    - Complete setup instructions in `README.md`.
+
+---
+
+## 5. Optimized Repository `README.md`
+
+```markdown
+# Cinefiles — Automated Media Clearance & Legal Perception Agent
+
+Cinefiles is an enterprise-grade media perception agent designed to solve the multi-billion-dollar legal bottleneck in independent filmmaking. By pairing Gemini Enterprise multimodal vision with an automated legal orchestration engine powered by IBM Bob, Cinefiles automatically detects background trademark violations (e.g., brand logos) and uncleared audio (e.g., ambient coffee shop music) before films hit festival distribution.
+
+---
+
+## 🛠 Built With
+
+* **Google Cloud Agent Builder & Gemini Enterprise:** Core agent playbook, multimodal timeline scanning, and tool orchestration.
+* **IBM Bob:** Generated FastAPI microservices, contract template engines, and compliance validation pipelines.
+* **Google Cloud Secret Manager:** Secure handling of API keys and enterprise credentials.
+
+---
+
+## 📦 Quickstart & Local Setup
+
+### 1. Backend Engine (Built via IBM Bob)
+```bash
+git clone https://github.com/alissatroiano/cinefiles.git
+cd cinefiles/backend
+pip install -r requirements.txt
+uvicorn main:app --reload --port 8080
+```
+
+### 2. Gemini Enterprise Integration
+1. Import `schema/openapi.json` into Google Cloud Agent Builder under **Tools -> Create Tool (OpenAPI Webhook)**.
+2. Load the provided Agent Playbook from `playbooks/cinefiles_agent.yaml`.
+
+---
+
+## 📄 License
+This project is licensed under the MIT License - see the `LICENSE` file for details.
+```
