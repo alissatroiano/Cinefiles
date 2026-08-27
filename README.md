@@ -15,6 +15,24 @@
 │   (Action Engine & MCP Protocol)  │ <-- the heavy Enterprise Legal Tasks
 └───────────────────────────────────┘
 ```
+### Application Flow
+
+```txt
+[ Filmmaker ] 
+     │ Uploads video/audio clip
+     ▼
+[ Gemini Enterprise Agent ] 
+     │ Detects audio & calls IBM Bob Webhook with clip URL/file
+     ▼
+[ IBM Bob Backend (Cloud Run) ]
+     │ 1. Sends audio snippet to AudD API (fingerprint match)
+     │ 2. Receives song title, artist, and ISRC code
+     │ 3. Calculates Sync & Master Use clearance fees ($30,000)
+     │ 4. Returns complete legal package JSON to Gemini
+     ▼
+[ Gemini Enterprise Agent ]
+     │ Formats and presents the final Clearance Report to the user
+```
 
 ### How To Build It
 

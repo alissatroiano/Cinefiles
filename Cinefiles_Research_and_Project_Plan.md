@@ -11,10 +11,8 @@
 
 ### The Hidden Bottleneck in Independent Filmmaking
 Independent filmmakers face existential legal risks from undetected, uncleared background intellectual property (IP). Standard production pipelines rely on manual script breakdowns and post-production legal reviews, which frequently miss micro-infringements:
-* **Background Apparel & Logos:** An extra wearing a Nike swoosh, a character holding a branded beverage, or a stylized logo on a storefront.
 * **Ambient Audio:** A Taylor Swift or commercial music track playing softly in the background of a coffee shop, bar, or street scene.
-* **Protected Artwork & Media:** Unlicensed paintings on set walls, movie posters in bedroom scenes, or television clips playing in the background.
-
+* 
 ---
 
 ### Economic Impact & Stat Analysis
