@@ -1,0 +1,69 @@
+# =============================================================================
+# Cinefiles — IBM_Bob_Audio_Clearance_Tool
+# Agent Builder OpenAPI Webhook Tool Registration
+# Phase 2 · Step 6 (PLAN.md)
+#
+# How to register this tool in Agent Builder:
+#   Google Cloud Console ➔ Agent Builder ➔ your agent
+#   ➔ Tools ➔ Create Tool
+#   ➔ Tool type: OpenAPI
+#   ➔ Paste the contents of backend/openapi.json  OR  point the URL field
+#     at your deployed Cloud Run / backend service URL.
+#
+# This YAML mirrors what Agent Builder stores internally and serves as the
+# authoritative tool descriptor kept under version control.
+# =============================================================================
+
+name: IBM_Bob_Audio_Clearance_Tool
+
+description: >
+  Sends an audio clip URL (or server-side file path) to the Cinefiles IBM Bob
+  clearance microservice. The service fingerprints the audio via the AudD API,
+  identifies the track (title, artist, Apple Music link), and returns estimated
+  Sync ($15,000) and Master ($15,000) licensing fees required to clear the
+  copyright for use in film, television, or digital media.
+
+type: OPEN_API
+
+# ── Endpoint ─────────────────────────────────────────────────────────────────
+# Replace <YOUR_CLOUD_RUN_URL> with the deployed backend service URL.
+# Local development: http://localhost:8080
+serviceUrl: https://<YOUR_CLOUD_RUN_URL>
+
+# ── Authentication ────────────────────────────────────────────────────────────
+# The AudD API token is held in Google Cloud Secret Manager (Phase 3 Step 8).
+# Agent Builder itself does not need an auth token to call this endpoint —
+# the FastAPI backend reads AUDD_API_TOKEN from its own runtime environment.
+authentication:
+  type: NONE   # Update to SERVICE_ACCOUNT_TOKEN if you add bearer auth later
+
+# ── OpenAPI schema reference ─────────────────────────────────────────────────
+# The canonical machine-readable schema is backend/openapi.json.
+# Paste its full contents into the Agent Builder "OpenAPI schema" text field,
+# or host it at a public URL and reference it here.
+openApiSchemaFile: ../backend/openapi.json
+
+# ── Input mapping (how the Playbook calls this tool) ─────────────────────────
+# The Playbook step "call_clearance_tool" passes these parameters:
+#
+#   audio_url       — publicly accessible URL of the audio clip
+#                     (mutually exclusive with file_path)
+#   file_path       — server-side path to the audio file
+#                     (mutually exclusive with audio_url)
+#
+# Example call from Playbook:
+#   IBM_Bob_Audio_Clearance_Tool({
+#     "audio_url": "https://storage.googleapis.com/cinefiles-uploads/clip.mp3"
+#   })
+
+# ── Expected response fields used by the Playbook ────────────────────────────
+# The Playbook reads the following fields from the tool response:
+#
+#   response.match.title          — identified song title
+#   response.match.artist         — identified artist name
+#   response.match.apple_music_link — Apple Music deep link (nullable)
+#   response.licenses[0].amount_usd — Sync fee (15000.0)
+#   response.licenses[1].amount_usd — Master fee (15000.0)
+#   response.total_fee_usd        — combined fee (30000.0)
+#   response.status               — "approved" | "pending" | "denied"
+#   response.requested_at         — ISO-8601 UTC timestamp

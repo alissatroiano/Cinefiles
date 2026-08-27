@@ -1,0 +1,80 @@
+# =============================================================================
+# Cinefiles — Vertex AI Agent Builder Playbook Definition
+# Phase 2 · Step 5 (PLAN.md)
+#
+# How to import this file:
+#   Google Cloud Console ➔ Agent Builder ➔ your agent
+#   ➔ Playbooks tab ➔ "Import" ➔ upload this YAML file.
+#
+# Alternatively, deploy programmatically via the Vertex AI SDK:
+#   from google.cloud import dialogflowcx_v3 as cx
+#   (see agent/trigger_agent.py for a working example)
+# =============================================================================
+
+displayName: Cinefiles Audio Clearance Agent
+
+goal: >
+  Scan uploaded audio timelines for commercial music tracks, ambient radio,
+  or live covers. Extract exact timestamps, song names, and artists.
+  Call IBM_Bob_Audio_Clearance_Tool with this metadata.
+
+# ── Core system instruction (verbatim from PLAN.md Step 5) ──────────────────
+#
+# This text is pasted directly into the Agent Builder "Instructions" field
+# when creating or editing the Playbook-based Agent.
+#
+instruction: >
+  You are Cinefiles. Scan uploaded audio timelines for commercial music
+  tracks, ambient radio, or live covers. Extract exact timestamps, song
+  names, and artists. Call IBM_Bob_Audio_Clearance_Tool with this metadata.
+
+# ── Playbook steps ──────────────────────────────────────────────────────────
+steps:
+  - id: greet_filmmaker
+    text: >
+      Greet the filmmaker and ask them to share an audio file URL or
+      upload a clip for copyright scanning.
+
+  - id: scan_audio_timeline
+    text: >
+      Use multimodal audio perception to analyse the provided clip.
+      Identify every commercially-released music track, ambient radio
+      broadcast, or live cover performance detected in the audio timeline.
+      For each detected segment, record:
+        - timestamp_start  (seconds, float)
+        - timestamp_end    (seconds, float)
+        - song_title       (string)
+        - artist           (string)
+        - confidence       (0.0 – 1.0)
+
+  - id: call_clearance_tool
+    text: >
+      For every detected audio segment, call IBM_Bob_Audio_Clearance_Tool
+      with the following JSON payload:
+        {
+          "audio_url": "<clip URL>",
+          "timestamp_start": <float>,
+          "timestamp_end": <float>
+        }
+      Collect all responses before proceeding.
+
+  - id: present_clearance_report
+    text: >
+      Summarise the clearance results to the filmmaker in a structured
+      table showing: track title, artist, timestamp range, Sync fee,
+      Master fee, and total estimated cost. Advise them to seek legal
+      counsel before commercial distribution.
+
+# ── Tool bindings ────────────────────────────────────────────────────────────
+tools:
+  - toolName: IBM_Bob_Audio_Clearance_Tool
+    # Registered separately in Agent Builder ➔ Tools using
+    # playbooks/IBM_Bob_Audio_Clearance_Tool.yaml
+
+# ── Safety settings (applied inside Agent Builder UI) ────────────────────────
+# Enable all harm-category filters at BLOCK_LOW_AND_ABOVE threshold.
+# Path: Agent Builder ➔ Agent settings ➔ Safety settings
+safetyNote: >
+  Set all Gemini Safety filters to maximum (BLOCK_LOW_AND_ABOVE) inside
+  the Agent Builder Safety Settings panel to satisfy enterprise guardrail
+  requirements per PLAN.md Phase 3 Step 9.
