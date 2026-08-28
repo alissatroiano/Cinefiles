@@ -15,6 +15,7 @@
 │   (Action Engine & MCP Protocol)  │ <-- the heavy Enterprise Legal Tasks
 └───────────────────────────────────┘
 ```
+
 ### Application Flow
 
 ```txt
@@ -34,97 +35,55 @@
      │ Formats and presents the final Clearance Report to the user
 ```
 
-### Local Setup
+### How To Build It
 
-#### Phase 1 — IBM Bob Backend (Complete ✅)
+#### Step 1: Initialize the Gemini Enterprise Agent
 
-```bash
-git clone https://github.com/alissatroiano/cinefiles.git
-cd cinefiles/backend
-pip install -r requirements.txt
+***Instead of programming loops, you write a Playbook—a plain-English set of structural instructions.***
 
-# Set your AudD API token (https://audd.io)
-export AUDD_API_TOKEN="your_token_here"   # PowerShell: $env:AUDD_API_TOKEN="…"
+1. Go to the Google Cloud Console ➔ Gemini Enterprise (Agent Builder).
+2. Create a new Playbook-based Agent.
+3. Define the Agent's goal in the instructions
 
-uvicorn main:app --reload --port 8080
-# Interactive docs: http://localhost:8080/docs
-```
+#### Step 2: Use IBM Bob to Build the "Clearance" Backend Tools
 
----
+***IBM Bob excels at spinning up valid, compliant microservices and Model Context Protocol (MCP) tools without manual boilerplate coding.***
 
-#### Phase 2 — Gemini Enterprise Agent Configuration
+1. Open your development workspace and prompt the IBM Bob coding assistant: ***"Bob, build me a FastAPI python endpoint that accepts an asset payload (asset_name, timestamp). It needs to search an external mock copyright database, match a template legal contract, and prepare a clearance PDF form. Ensure it has a human-approval step before completion."***
+2. Watch as IBM Bob automatically generates the code, writes unit tests, and structures  server logic cleanly using best practices.
 
-**Step 4 — Open Google Cloud Console → Agent Builder**
+#### Step 3: Connect Agent Builder to Bob via Webhooks
 
-1. Navigate to [console.cloud.google.com](https://console.cloud.google.com) and select (or create) your GCP project.
-2. In the left sidebar, go to **Agent Builder** (search "Agent Builder" if not pinned).
-3. Click **Create App** → choose **Conversational Agent** → select **Build your own**.
+***To make your low-code agent trigger Bob's legal engine, you hook them together using an OpenAPI tool schema.***
 
----
+1. In Vertex AI Agent Builder, click Tools ➔ Create Tool.
+2. Set the tool type to OpenAPI / Webhook.
+3. Paste the API schema that IBM Bob generated for your clearance endpoint.
+4. In your Agent Builder Playbook instructions, add a deterministic directive:
+***"Whenever a user uploads a video file, call the VerifyTrademarks tool immediately with the extracted timestamps."***
 
-**Step 5 — Create the Playbook-based Agent**
+#### Step 4: Rapidly Deploy the Frontend
 
-1. Inside your new agent, go to the **Playbooks** tab and click **Create**.
-2. Name the playbook `Cinefiles Audio Clearance`.
-3. Paste the following text verbatim into the **Goal / Instructions** field:
+1. Inside Agent Builder, navigate to the Deployment tab.
+2. Use the built-in Web Chat Interface widget
+3. This generates a clean, functional web page UI with an embeddable script tag
 
-   ```
-   You are Cinefiles. Scan uploaded audio timelines for commercial music tracks, ambient radio, or live covers. Extract exact timestamps, song names, and artists. Call IBM_Bob_Audio_Clearance_Tool with this metadata.
-   ```
+#### Step 5: Secure and Audit the System
 
-   > The full playbook YAML (including multi-step flow) is in [`playbooks/cinefiles_agent.yaml`](playbooks/cinefiles_agent.yaml).
+***To nail the "Technological Implementation" judging criteria, wrap deployment in standard enterprise safety layers:***
 
----
+- Secrets: Ensure the API keys that Bob uses to hit registries are safely drawn from the Google Cloud Secret Manager.
+- Safety: Toggle the Gemini Safety Settings to maximum inside Agent Builder to block toxic or illicit creative outputs.
 
-**Step 6 — Register the OpenAPI Webhook Tool**
+### System Prompt 
 
-1. In Agent Builder, go to **Tools → Create Tool**.
-2. Set **Tool type** to **OpenAPI**.
-3. Name the tool exactly: `IBM_Bob_Audio_Clearance_Tool`
-4. Paste the contents of [`backend/openapi.json`](backend/openapi.json) into the schema field.
-5. Set the **Service URL** to your deployed backend (Cloud Run URL, or `http://localhost:8080` for local testing).
-6. Click **Save**.
+# Goal
+You are "Cinefiles," an advanced media perception agent. Your goal is to scan user-uploaded indie film footage, analyze visual and auditory timelines for potential copyright or trademark violations, and safely route that data to the legal orchestration backend.
 
-   > The full tool descriptor is in [`playbooks/IBM_Bob_Audio_Clearance_Tool.yaml`](playbooks/IBM_Bob_Audio_Clearance_Tool.yaml).
-
----
-
-#### Phase 3 — Runtime SDK Wire-up & Security *(Days 8–10)*
-
-Store your AudD API token in **Google Cloud Secret Manager**:
-
-```bash
-gcloud secrets create AUDD_API_TOKEN --replication-policy="automatic"
-echo -n "your_token_here" | gcloud secrets versions add AUDD_API_TOKEN --data-file=-
-```
-
-Enable **maximum Gemini Safety Settings** inside Agent Builder:
-- Go to **Agent settings → Safety settings**
-- Set all harm-category filters to **BLOCK_LOW_AND_ABOVE**
-
----
-
-#### Phase 4 — Web UI & Submission *(Days 11–14)*
-
-1. In Agent Builder → **Deployment tab** → copy the **Web Chat widget** script tag.
-2. Embed it in a static HTML page or Replit project for the demo.
-3. Record a < 3-minute video showing: upload → detection → clearance report.
-
----
-
-### Agent Playbook — System Instruction
-
-```
-You are Cinefiles. Scan uploaded audio timelines for commercial music
-tracks, ambient radio, or live covers. Extract exact timestamps, song
-names, and artists. Call IBM_Bob_Audio_Clearance_Tool with this metadata.
-```
-
-### Agent Steps
-
-1. Greet the filmmaker and prompt them to upload a video or audio clip.
-2. Analyse the audio timeline using multimodal perception — identify every commercial track, ambient radio broadcast, or live cover.
-3. For each detected segment, extract `timestamp_start`, `timestamp_end`, `song_title`, and `artist`.
-4. Call `IBM_Bob_Audio_Clearance_Tool` with the clip URL and timestamps.
-5. Present a clearance report table: track, artist, timestamp range, Sync fee, Master fee, and total cost.
-6. Advise the filmmaker to consult legal counsel before commercial distribution.
+# Instructions
+1. Greet the filmmaker and prompt them to upload their video clip or film draft.
+2. Analyze the video and audio timelines using your multimodal perception capabilities. Identify any background brand logos, protected artwork, or commercial music tracks.
+3. Extract specific timestamps, asset descriptions, and confidence levels for each detected item.
+4. Do not attempt to formulate legal contracts or make compliance decisions yourself.
+5. Immediately call the IBM_Bob_Compliance_Tool by passing the raw, extracted timeline metadata payload.
+6. Inform the filmmaker in the chat: "I have detected potential clearance items and sent a structured payload to IBM Bob. Please check your email to review and approve the compliance Plan Summary before any contracts are saved."
