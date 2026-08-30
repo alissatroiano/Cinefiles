@@ -1,4 +1,10 @@
-## Cinefiles
+![Cinefiles Logo](public/logo-dark.png)
+
+# Cinefiles
+## Table of Contents
+
+
+##
 
 ```txt
 [Indie Filmmaker UI]
