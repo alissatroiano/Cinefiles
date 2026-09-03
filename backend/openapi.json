@@ -1,200 +1,200 @@
 {
-  "openapi": "3.0.3",
-  "info": {
-    "title": "Cinefiles Audio Copyright Clearance Service",
-    "description": "Microservice that fingerprints an audio clip via the AudD API, identifies the track, and returns estimated Sync and Master recording licensing fees required to clear the copyright for use in film, television, or digital media.",
-    "contact": {
-      "name": "Cinefiles",
-      "url": "https://github.com/Cinefiles"
-    },
-    "license": {
-      "name": "MIT"
-    },
-    "version": "1.0.0"
-  },
-  "paths": {
-    "/api/v1/clearance/audio": {
-      "post": {
-        "tags": [
-          "Clearance"
-        ],
-        "summary": "Request audio copyright clearance",
-        "description": "Accepts a raw audio URL or server-side file path, fingerprints the clip via the AudD API, extracts the matched artist, title, and Apple Music link, calculates estimated Sync and Master recording licensing fees, and returns a structured clearance response.",
-        "operationId": "request_audio_clearance",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ClearanceRequest"
-              }
-            }
-          }
+    "openapi": "3.0.3",
+    "info": {
+        "title": "Cinefiles Audio Copyright Clearance Service",
+        "description": "Microservice that fingerprints an audio clip via the AudD API, identifies the track, and returns estimated Sync and Master recording licensing fees required to clear the copyright for use in film, television, or digital media.",
+        "contact": {
+            "name": "Cinefiles",
+            "url": "https://github.com/Cinefiles"
         },
-        "responses": {
-          "200": {
-            "description": "Clearance estimate successfully generated.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ClearanceResponse"
+        "license": {
+            "name": "MIT"
+        },
+        "version": "1.0.0"
+    },
+    "paths": {
+        "/api/v1/clearance/audio": {
+            "post": {
+                "tags": [
+                    "Clearance"
+                ],
+                "summary": "Request audio copyright clearance",
+                "description": "Accepts a raw audio URL or server-side file path, fingerprints the clip via the AudD API, extracts the matched artist, title, and Apple Music link, calculates estimated Sync and Master recording licensing fees, and returns a structured clearance response.",
+                "operationId": "request_audio_clearance",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ClearanceRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Clearance estimate successfully generated.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ClearanceResponse"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad request - invalid file path or audio source."
+                    },
+                    "404": {
+                        "description": "No matching track found for the provided audio."
+                    },
+                    "422": {
+                        "description": "Validation error - invalid request payload."
+                    },
+                    "502": {
+                        "description": "AudD API error or unreachable."
+                    },
+                    "504": {
+                        "description": "AudD API request timed out."
+                    }
                 }
-              }
             }
-          },
-          "400": {
-            "description": "Bad request - invalid file path or audio source."
-          },
-          "404": {
-            "description": "No matching track found for the provided audio."
-          },
-          "422": {
-            "description": "Validation error - invalid request payload."
-          },
-          "502": {
-            "description": "AudD API error or unreachable."
-          },
-          "504": {
-            "description": "AudD API request timed out."
-          }
         }
-      }
-    }
-  },
-  "components": {
-    "schemas": {
-      "ClearanceRequest": {
-        "type": "object",
-        "title": "ClearanceRequest",
-        "description": "Payload for an audio clearance request. Supply exactly one of audio_url (a publicly accessible URL) or file_path (a server-side path to an audio file).",
-        "properties": {
-          "audio_url": {
-            "type": "string",
-            "nullable": true,
-            "title": "Audio URL",
-            "description": "Publicly accessible URL of the audio file to identify.",
-            "example": "https://example.com/clip.mp3"
-          },
-          "file_path": {
-            "type": "string",
-            "nullable": true,
-            "title": "File Path",
-            "description": "Server-side file-system path to the audio file to identify.",
-            "example": "/uploads/clip.mp3"
-          }
-        }
-      },
-      "AuddMatch": {
-        "type": "object",
-        "title": "AuddMatch",
-        "description": "Subset of AudD match data surfaced in the response.",
-        "required": [
-          "title",
-          "artist"
-        ],
-        "properties": {
-          "title": {
-            "type": "string",
-            "title": "Title"
-          },
-          "artist": {
-            "type": "string",
-            "title": "Artist"
-          },
-          "apple_music_link": {
-            "type": "string",
-            "nullable": true,
-            "title": "Apple Music Link"
-          }
-        }
-      },
-      "LicenseFee": {
-        "type": "object",
-        "title": "LicenseFee",
-        "description": "Individual licence fee line-item.",
-        "required": [
-          "license_type",
-          "description",
-          "amount_usd"
-        ],
-        "properties": {
-          "license_type": {
-            "type": "string",
-            "enum": [
-              "Sync",
-              "Master"
-            ],
-            "title": "License Type"
-          },
-          "description": {
-            "type": "string",
-            "title": "Description"
-          },
-          "amount_usd": {
-            "type": "number",
-            "title": "Amount USD"
-          }
-        }
-      },
-      "ClearanceResponse": {
-        "type": "object",
-        "title": "ClearanceResponse",
-        "description": "Full clearance response payload.",
-        "required": [
-          "status",
-          "match",
-          "licenses",
-          "total_fee_usd",
-          "currency",
-          "requested_at",
-          "service",
-          "version"
-        ],
-        "properties": {
-          "status": {
-            "type": "string",
-            "enum": [
-              "approved",
-              "pending",
-              "denied"
-            ],
-            "title": "Status"
-          },
-          "match": {
-            "$ref": "#/components/schemas/AuddMatch"
-          },
-          "licenses": {
-            "type": "array",
-            "title": "Licenses",
-            "items": {
-              "$ref": "#/components/schemas/LicenseFee"
+    },
+    "components": {
+        "schemas": {
+            "ClearanceRequest": {
+                "type": "object",
+                "title": "ClearanceRequest",
+                "description": "Payload for an audio clearance request. Supply exactly one of audio_url (a publicly accessible URL) or file_path (a server-side path to an audio file).",
+                "properties": {
+                    "audio_url": {
+                        "type": "string",
+                        "nullable": true,
+                        "title": "Audio URL",
+                        "description": "Publicly accessible URL of the audio file to identify.",
+                        "example": "https://example.com/clip.mp3"
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "nullable": true,
+                        "title": "File Path",
+                        "description": "Server-side file-system path to the audio file to identify.",
+                        "example": "/uploads/clip.mp3"
+                    }
+                }
+            },
+            "AuddMatch": {
+                "type": "object",
+                "title": "AuddMatch",
+                "description": "Subset of AudD match data surfaced in the response.",
+                "required": [
+                    "title",
+                    "artist"
+                ],
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "title": "Title"
+                    },
+                    "artist": {
+                        "type": "string",
+                        "title": "Artist"
+                    },
+                    "apple_music_link": {
+                        "type": "string",
+                        "nullable": true,
+                        "title": "Apple Music Link"
+                    }
+                }
+            },
+            "LicenseFee": {
+                "type": "object",
+                "title": "LicenseFee",
+                "description": "Individual licence fee line-item.",
+                "required": [
+                    "license_type",
+                    "description",
+                    "amount_usd"
+                ],
+                "properties": {
+                    "license_type": {
+                        "type": "string",
+                        "enum": [
+                            "Sync",
+                            "Master"
+                        ],
+                        "title": "License Type"
+                    },
+                    "description": {
+                        "type": "string",
+                        "title": "Description"
+                    },
+                    "amount_usd": {
+                        "type": "number",
+                        "title": "Amount USD"
+                    }
+                }
+            },
+            "ClearanceResponse": {
+                "type": "object",
+                "title": "ClearanceResponse",
+                "description": "Full clearance response payload.",
+                "required": [
+                    "status",
+                    "match",
+                    "licenses",
+                    "total_fee_usd",
+                    "currency",
+                    "requested_at",
+                    "service",
+                    "version"
+                ],
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "approved",
+                            "pending",
+                            "denied"
+                        ],
+                        "title": "Status"
+                    },
+                    "match": {
+                        "$ref": "#/components/schemas/AuddMatch"
+                    },
+                    "licenses": {
+                        "type": "array",
+                        "title": "Licenses",
+                        "items": {
+                            "$ref": "#/components/schemas/LicenseFee"
+                        }
+                    },
+                    "total_fee_usd": {
+                        "type": "number",
+                        "title": "Total Fee USD"
+                    },
+                    "currency": {
+                        "type": "string",
+                        "enum": [
+                            "USD"
+                        ],
+                        "title": "Currency"
+                    },
+                    "requested_at": {
+                        "type": "string",
+                        "title": "Requested At"
+                    },
+                    "service": {
+                        "type": "string",
+                        "title": "Service"
+                    },
+                    "version": {
+                        "type": "string",
+                        "title": "Version"
+                    }
+                }
             }
-          },
-          "total_fee_usd": {
-            "type": "number",
-            "title": "Total Fee USD"
-          },
-          "currency": {
-            "type": "string",
-            "enum": [
-              "USD"
-            ],
-            "title": "Currency"
-          },
-          "requested_at": {
-            "type": "string",
-            "title": "Requested At"
-          },
-          "service": {
-            "type": "string",
-            "title": "Service"
-          },
-          "version": {
-            "type": "string",
-            "title": "Version"
-          }
         }
-      }
     }
-  }
 }

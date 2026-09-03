@@ -17,6 +17,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 
+from dotenv import load_dotenv
+
+load_dotenv()  # Loads variables from backend/.env
 
 # ---------------------------------------------------------------------------
 # Constants
