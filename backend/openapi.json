@@ -114,7 +114,7 @@
             "LicenseFee": {
                 "type": "object",
                 "title": "LicenseFee",
-                "description": "Individual licence fee line-item.",
+                "description": "Individual license fee line-item.",
                 "required": [
                     "license_type",
                     "description",
