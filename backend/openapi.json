@@ -12,6 +12,9 @@
         },
         "version": "1.0.0"
     },
+    "servers": [{
+        "url": "https://cinefiles-backend-543072204876.us-east1.run.app/"
+    }],
     "paths": {
         "/api/v1/clearance/audio": {
             "post": {
