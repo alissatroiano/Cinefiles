@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cinefiles — Audio Copyright Clearance</title>
+
+  <!-- Tailwind CSS (CDN — swap for a build step before production) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: '#7c3aed',        /* violet-700 */
+            'brand-light': '#a78bfa' /* violet-400 */
+          },
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui']
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Inter font -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+
+  <style>
+    /* Subtle film-grain scanline overlay */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(255,255,255,.015) 2px,
+        rgba(255,255,255,.015) 4px
+      );
+      pointer-events: none;
+      z-index: 50;
+    }
+
+    /* Spinner animation */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { animation: spin .8s linear infinite; }
+
+    /* Fade-in for results panel */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(12px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .fade-up { animation: fadeUp .35s ease forwards; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #111827; }
+    ::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 3px; }
+  </style>
+</head>
+
+<body class="bg-gray-950 text-gray-100 font-sans min-h-screen flex flex-col">
+
+  <!-- ── NAV ───────────────────────────────────────────────────────────── -->
+  <header class="border-b border-gray-800 bg-gray-950/80 backdrop-blur sticky top-0 z-40">
+    <div class="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <img src="../public/logo-dark.png" alt="Cinefiles" class="h-8 w-auto" />
+        <span class="text-sm text-gray-500 tracking-widest uppercase font-medium">Clearance</span>
+      </div>
+      <span class="text-xs text-gray-600 hidden sm:block">
+        Powered by <span class="text-brand-light">Gemini Enterprise</span> &amp;
+        <span class="text-brand-light">IBM Bob</span>
+      </span>
+    </div>
+  </header>
+
+  <!-- ── HERO ──────────────────────────────────────────────────────────── -->
+  <main class="flex-1 max-w-5xl mx-auto w-full px-6 py-12 space-y-10">
+
+    <div class="space-y-2">
+      <h1 class="text-3xl sm:text-4xl font-bold tracking-tight text-white">
+        Audio Copyright <span class="text-brand-light">Clearance</span>
+      </h1>
+      <p class="text-gray-400 max-w-xl text-sm leading-relaxed">
+        Submit an audio clip URL to fingerprint the track, identify the artist,
+        and receive an instant estimate of Sync and Master Use licensing fees.
+      </p>
+    </div>
+
+    <!-- ── INPUT CARD ─────────────────────────────────────────────────── -->
+    <section class="bg-gray-900 border border-gray-800 rounded-2xl p-6 sm:p-8 space-y-6">
+      <div class="space-y-1">
+        <label for="audioUrl" class="block text-sm font-medium text-gray-300">
+          Audio Clip URL
+        </label>
+        <p class="text-xs text-gray-500">
+          A publicly accessible MP3, WAV, or AAC link. Try
+          <button type="button" onclick="fillDemo()"
+                  class="text-brand-light hover:underline focus:outline-none">
+            the AudD test clip ↗
+          </button>
+        </p>
+      </div>
+
+      <div class="flex flex-col sm:flex-row gap-3">
+        <input
+          id="audioUrl"
+          type="url"
+          placeholder="https://audd.tech/example.mp3"
+          class="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-3
+                 text-sm text-gray-100 placeholder-gray-600
+                 focus:outline-none focus:ring-2 focus:ring-brand focus:border-transparent
+                 transition"
+        />
+        <button
+          id="submitBtn"
+          onclick="submitClearance()"
+          class="inline-flex items-center justify-center gap-2 px-6 py-3
+                 bg-brand hover:bg-violet-600 active:bg-violet-800
+                 text-white text-sm font-semibold rounded-xl
+                 transition disabled:opacity-40 disabled:cursor-not-allowed
+                 focus:outline-none focus:ring-2 focus:ring-brand focus:ring-offset-2 focus:ring-offset-gray-900"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2"
+               viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round"
+                  d="M9 19V6l12 7-12 6z"/>
+          </svg>
+          Run Clearance
+        </button>
+      </div>
+
+      <!-- Inline error -->
+      <p id="inputError" class="hidden text-xs text-red-400 mt-1"></p>
+    </section>
+
+    <!-- ── RESULTS PANEL ─────────────────────────────────────────────── -->
+    <section id="resultsPanel" class="hidden fade-up space-y-4">
+
+      <!-- Loading state -->
+      <div id="loadingState" class="hidden flex items-center gap-3 py-8 justify-center">
+        <svg class="spinner w-6 h-6 text-brand-light" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+          <path class="opacity-75" fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+        </svg>
+        <span class="text-sm text-gray-400">Fingerprinting audio…</span>
+      </div>
+
+      <!-- Result card -->
+      <div id="resultCard"
+           class="hidden bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+
+        <!-- Card header -->
+        <div class="flex items-center justify-between px-6 py-4 border-b border-gray-800 bg-gray-800/40">
+          <div class="flex items-center gap-2">
+            <span id="statusBadge"
+                  class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold">
+            </span>
+            <span class="text-sm font-semibold text-white" id="trackTitle">—</span>
+          </div>
+          <span class="text-xs text-gray-500" id="requestedAt">—</span>
+        </div>
+
+        <!-- Match details -->
+        <div class="px-6 py-5 grid sm:grid-cols-2 gap-4 border-b border-gray-800">
+          <div class="space-y-1">
+            <p class="text-xs text-gray-500 uppercase tracking-wider">Artist</p>
+            <p class="text-sm font-medium text-gray-100" id="artistName">—</p>
+          </div>
+          <div class="space-y-1">
+            <p class="text-xs text-gray-500 uppercase tracking-wider">Apple Music</p>
+            <a id="appleMusicLink" href="#" target="_blank" rel="noopener"
+               class="text-sm font-medium text-brand-light hover:underline hidden">
+              Open in Apple Music ↗
+            </a>
+            <p id="appleMusicNone" class="text-sm text-gray-600 hidden">Not available</p>
+          </div>
+        </div>
+
+        <!-- License fee breakdown -->
+        <div class="px-6 py-5 space-y-3">
+          <p class="text-xs text-gray-500 uppercase tracking-wider mb-3">Licensing Fee Estimate</p>
+          <div id="licenseRows" class="space-y-2"></div>
+
+          <!-- Total -->
+          <div class="flex justify-between items-center pt-3 border-t border-gray-800 mt-3">
+            <span class="text-sm font-semibold text-gray-300">Total Estimated Cost</span>
+            <span id="totalFee"
+                  class="text-lg font-bold text-white tabular-nums">$0.00</span>
+          </div>
+        </div>
+
+        <!-- Disclaimer -->
+        <div class="px-6 py-4 bg-yellow-950/30 border-t border-yellow-900/40">
+          <p class="text-xs text-yellow-500/80 leading-relaxed">
+            ⚠ Estimates are indicative only. Actual licensing fees vary by territory,
+            clip duration, and rights holder. Always consult a qualified entertainment
+            lawyer before commercial distribution.
+          </p>
+        </div>
+      </div>
+
+      <!-- Error card -->
+      <div id="errorCard"
+           class="hidden bg-red-950/40 border border-red-900/60 rounded-2xl px-6 py-5">
+        <div class="flex items-start gap-3">
+          <svg class="w-5 h-5 text-red-400 mt-0.5 shrink-0" fill="none"
+               stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="10"/>
+            <path stroke-linecap="round" d="M12 8v4m0 4h.01"/>
+          </svg>
+          <div>
+            <p class="text-sm font-semibold text-red-400">Clearance Failed</p>
+            <p id="errorMessage" class="text-xs text-red-300/80 mt-1"></p>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ── DIALOGFLOW CX CHAT WIDGET ─────────────────────────────────── -->
+    <section class="space-y-3">
+      <div class="flex items-center gap-2">
+        <div class="h-px flex-1 bg-gray-800"></div>
+        <span class="text-xs text-gray-600 uppercase tracking-widest">or chat with Cinefiles</span>
+        <div class="h-px flex-1 bg-gray-800"></div>
+      </div>
+      <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-3">
+        <p class="text-sm text-gray-400">
+          Talk to the <span class="text-brand-light font-medium">Cinefiles Agent</span> directly —
+          describe your scene, share a clip URL, and let Gemini Enterprise handle the rest.
+        </p>
+        <!-- ───────────────────────────────────────────────────────────────────
+             DIALOGFLOW CX MESSENGER WIDGET
+             Replace PROJECT_ID, AGENT_ID, and REGION with your values from:
+             Agent Builder → Integrations → Dialogflow CX Messenger
+        ──────────────────────────────────────────────────────────────────── -->
+        <df-messenger
+          project-id="YOUR_GCP_PROJECT_ID"
+          agent-id="YOUR_AGENT_ID"
+          language-code="en"
+          max-query-length="-1"
+        >
+          <df-messenger-chat-bubble
+            chat-title="Cinefiles Agent"
+            chat-title-icon="../public/logo-dark.png"
+          ></df-messenger-chat-bubble>
+        </df-messenger>
+        <script
+          src="https://www.gstatic.com/dialogflow-console/fast/df-messenger/prod/v1/df-messenger.js">
+        </script>
+        <style>
+          df-messenger {
+            --df-messenger-bot-message: #1f2937;
+            --df-messenger-button-titlebar-color: #7c3aed;
+            --df-messenger-chat-background: #111827;
+            --df-messenger-font-color: #f9fafb;
+            --df-messenger-send-icon: #a78bfa;
+            --df-messenger-user-message: #4c1d95;
+          }
+        </style>
+        <p class="text-xs text-gray-600 pt-1">
+          Set <code class="text-gray-500">project-id</code> and
+          <code class="text-gray-500">agent-id</code> in
+          <code class="text-gray-500">frontend/index.html</code> from
+          Agent Builder → Integrations → Dialogflow CX Messenger.
+        </p>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ── FOOTER ─────────────────────────────────────────────────────────── -->
+  <footer class="border-t border-gray-800 mt-auto">
+    <div class="max-w-5xl mx-auto px-6 py-5 flex flex-col sm:flex-row items-center
+                justify-between gap-2 text-xs text-gray-600">
+      <span>© 2026 Cinefiles. MIT License.</span>
+      <span>
+        Built with
+        <span class="text-brand-light">IBM Bob</span>,
+        <span class="text-brand-light">Gemini Enterprise</span> &amp;
+        <span class="text-brand-light">Google Cloud Run</span>
+      </span>
+    </div>
+  </footer>
+
+  <!-- ── JAVASCRIPT ─────────────────────────────────────────────────────── -->
+  <script>
+    const API_BASE = 'https://cinefiles-backend-543072204876.us-east1.run.app';
+
+    function fillDemo() {
+      document.getElementById('audioUrl').value = 'https://audd.tech/example.mp3';
+    }
+
+    function showError(msg) {
+      const e = document.getElementById('inputError');
+      e.textContent = msg;
+      e.classList.remove('hidden');
+    }
+
+    function clearError() {
+      document.getElementById('inputError').classList.add('hidden');
+    }
+
+    function setLoading(loading) {
+      const btn = document.getElementById('submitBtn');
+      btn.disabled = loading;
+      document.getElementById('loadingState').classList.toggle('hidden', !loading);
+      document.getElementById('resultCard').classList.add('hidden');
+      document.getElementById('errorCard').classList.add('hidden');
+      document.getElementById('resultsPanel').classList.remove('hidden');
+    }
+
+    function formatUSD(n) {
+      return new Intl.NumberFormat('en-US', {
+        style: 'currency', currency: 'USD', maximumFractionDigits: 0
+      }).format(n);
+    }
+
+    function renderResult(data) {
+      // Status badge
+      const badge = document.getElementById('statusBadge');
+      const colours = {
+        approved: 'bg-green-900/60 text-green-400',
+        pending:  'bg-yellow-900/60 text-yellow-400',
+        denied:   'bg-red-900/60 text-red-400'
+      };
+      badge.className = `inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${colours[data.status] ?? colours.pending}`;
+      badge.textContent = data.status.charAt(0).toUpperCase() + data.status.slice(1);
+
+      // Match
+      document.getElementById('trackTitle').textContent = data.match?.title ?? '—';
+      document.getElementById('artistName').textContent = data.match?.artist ?? '—';
+
+      const link = data.match?.apple_music_link;
+      const linkEl  = document.getElementById('appleMusicLink');
+      const noneEl  = document.getElementById('appleMusicNone');
+      if (link) {
+        linkEl.href = link;
+        linkEl.classList.remove('hidden');
+        noneEl.classList.add('hidden');
+      } else {
+        linkEl.classList.add('hidden');
+        noneEl.classList.remove('hidden');
+      }
+
+      // Timestamp
+      const ts = data.requested_at
+        ? new Date(data.requested_at).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
+        : '';
+      document.getElementById('requestedAt').textContent = ts;
+
+      // License rows
+      const rows = document.getElementById('licenseRows');
+      rows.innerHTML = '';
+      (data.licenses ?? []).forEach(lic => {
+        rows.insertAdjacentHTML('beforeend', `
+          <div class="flex justify-between items-start gap-4">
+            <div>
+              <p class="text-sm font-medium text-gray-200">${lic.license_type} Licence</p>
+              <p class="text-xs text-gray-500 mt-0.5 max-w-sm leading-relaxed">${lic.description}</p>
+            </div>
+            <span class="text-sm font-semibold text-white tabular-nums shrink-0">
+              ${formatUSD(lic.amount_usd)}
+            </span>
+          </div>
+        `);
+      });
+
+      document.getElementById('totalFee').textContent = formatUSD(data.total_fee_usd ?? 0);
+
+      document.getElementById('loadingState').classList.add('hidden');
+      const card = document.getElementById('resultCard');
+      card.classList.remove('hidden');
+      card.classList.add('fade-up');
+    }
+
+    function renderApiError(detail, status) {
+      document.getElementById('loadingState').classList.add('hidden');
+      const msg = typeof detail === 'string'
+        ? detail
+        : (detail?.detail ?? `HTTP ${status} — unexpected error`);
+      document.getElementById('errorMessage').textContent = msg;
+      document.getElementById('errorCard').classList.remove('hidden');
+    }
+
+    async function submitClearance() {
+      clearError();
+      const url = document.getElementById('audioUrl').value.trim();
+      if (!url) { showError('Please enter an audio clip URL.'); return; }
+      try { new URL(url); } catch {
+        showError('That doesn\'t look like a valid URL.'); return;
+      }
+
+      setLoading(true);
+
+      try {
+        const resp = await fetch(`${API_BASE}/api/v1/clearance/audio`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ audio_url: url })
+        });
+
+        const json = await resp.json();
+
+        if (!resp.ok) {
+          renderApiError(json, resp.status);
+        } else {
+          renderResult(json);
+        }
+      } catch (err) {
+        renderApiError(`Network error — is the backend reachable? (${err.message})`);
+      } finally {
+        document.getElementById('submitBtn').disabled = false;
+      }
+    }
+
+    // Submit on Enter key inside the input
+    document.getElementById('audioUrl')
+      .addEventListener('keydown', e => { if (e.key === 'Enter') submitClearance(); });
+  </script>
+
+</body>
+</html>
