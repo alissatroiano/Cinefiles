@@ -9,6 +9,8 @@ POST /api/v1/clearance/approve – Finalise a pending asset clearance after huma
 
 Audio fingerprinting is performed by the AudD API (https://api.audd.io/).
 The AudD API token must be set in the AUDD_API_TOKEN environment variable.
+
+The frontend (frontend/index.html) is served at http://localhost:8080/ui
 """
 
 from __future__ import annotations
@@ -23,7 +25,9 @@ from typing import Any, Literal, Optional
 import requests as http_client
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
 load_dotenv()  # Loads variables from backend/.env
@@ -89,8 +93,7 @@ MOCK_COPYRIGHT_DB: dict[str, dict[str, Any]] = {
 }
 
 # ---------------------------------------------------------------------------
-# Contract templates
-# One template per risk_level. {placeholders} are filled at request time.
+# Contract templates  (one per risk_level)
 # ---------------------------------------------------------------------------
 
 CONTRACT_TEMPLATES: dict[str, str] = {
@@ -155,15 +158,15 @@ CONTRACT_TEMPLATES: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# In-memory clearance store  { clearance_id: AssetClearanceRecord }
-# In production replace with a Cloud Firestore / Cloud SQL write.
+# In-memory clearance store  { clearance_id: record }
+# Replace with Cloud Firestore / Cloud SQL in production.
 # ---------------------------------------------------------------------------
 
 _clearance_store: dict[str, dict[str, Any]] = {}
 
 
 # ---------------------------------------------------------------------------
-# Pydantic models
+# Pydantic models — audio clearance
 # ---------------------------------------------------------------------------
 
 
@@ -189,7 +192,7 @@ class ClearanceRequest(BaseModel):
     def exactly_one_source(self) -> "ClearanceRequest":
         has_url = bool(self.audio_url and self.audio_url.strip())
         has_path = bool(self.file_path and self.file_path.strip())
-        if has_url == has_path:  # both truthy or both falsy
+        if has_url == has_path:
             raise ValueError(
                 "Provide exactly one of 'audio_url' or 'file_path', not both or neither."
             )
@@ -303,9 +306,94 @@ class ClearanceResponse(BaseModel):
     licenses: list[LicenseFee]
     total_fee_usd: float
     currency: Literal["USD"]
-    requested_at: str   # ISO-8601 UTC
+    requested_at: str
     service: str
     version: str
+
+
+# ---------------------------------------------------------------------------
+# Pydantic models — asset clearance
+# ---------------------------------------------------------------------------
+
+
+class AssetClearanceRequest(BaseModel):
+    """Payload for a visual/brand asset clearance request."""
+
+    asset_name: str = Field(
+        ...,
+        min_length=1,
+        description="Name or description of the asset detected in the footage.",
+        examples=["Nike Swoosh Logo"],
+    )
+    timestamp: str = Field(
+        ...,
+        min_length=1,
+        description="Timecode in the footage where the asset appears (e.g. '00:04:32').",
+        examples=["00:04:32"],
+    )
+    production_title: str = Field(
+        default="Untitled Production",
+        description="Title of the film or production for the contract header.",
+        examples=["My Indie Film"],
+    )
+
+
+class PdfDraftPayload(BaseModel):
+    """Base-64 encoded PDF contract draft."""
+
+    filename: str
+    content_type: Literal["application/pdf"]
+    data_base64: str
+    page_count: int
+
+
+class AssetClearanceResponse(BaseModel):
+    """Response returned immediately after submitting an asset clearance request."""
+
+    clearance_id: str
+    status: Literal["pending_human_approval"]
+    asset_name: str
+    matched_record: Optional[dict] = None
+    risk_level: str
+    estimated_fee_usd: float
+    contract_template_used: str
+    pdf_draft: PdfDraftPayload
+    submitted_at: str
+    message: str
+
+
+class ApproveRequest(BaseModel):
+    """Payload for the human-approval endpoint."""
+
+    clearance_id: str = Field(
+        ...,
+        description="The clearance_id returned by POST /api/v1/clearance/asset.",
+        examples=["clr_a1b2c3d4"],
+    )
+    approver_name: str = Field(
+        ...,
+        min_length=1,
+        description="Full name of the human approver.",
+        examples=["Jane Smith"],
+    )
+    approver_notes: Optional[str] = Field(
+        default=None,
+        description="Optional notes or conditions attached to the approval.",
+        examples=["Cleared for festival distribution only."],
+    )
+
+
+class ApproveResponse(BaseModel):
+    """Response returned after a clearance is finalised."""
+
+    clearance_id: str
+    status: Literal["approved"]
+    asset_name: str
+    approver_name: str
+    approver_notes: Optional[str]
+    approved_at: str
+    pdf_final: PdfDraftPayload
+    message: str
 
 
 # ---------------------------------------------------------------------------
@@ -325,9 +413,17 @@ app = FastAPI(
     license_info={"name": "MIT"},
 )
 
+# CORS — lets the frontend call the API from any origin (local dev + Cloud Run).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["POST", "GET", "OPTIONS"],
+    allow_headers=["*"],
+)
+
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers — audio clearance
 # ---------------------------------------------------------------------------
 
 
@@ -343,11 +439,7 @@ def _get_audd_token() -> str:
 
 def _query_audd(audio_url: Optional[str], file_path: Optional[str], token: str) -> dict:
     """Call the AudD recognition API and return the raw JSON response dict."""
-    data = {
-        "api_token": token,
-        "return": "apple_music",
-    }
-
+    data = {"api_token": token, "return": "apple_music"}
     try:
         if audio_url:
             data["url"] = audio_url
@@ -355,10 +447,7 @@ def _query_audd(audio_url: Optional[str], file_path: Optional[str], token: str) 
         else:
             with open(file_path, "rb") as audio_file:  # type: ignore[arg-type]
                 resp = http_client.post(
-                    AUDD_API_URL,
-                    data=data,
-                    files={"file": audio_file},
-                    timeout=30,
+                    AUDD_API_URL, data=data, files={"file": audio_file}, timeout=30
                 )
     except FileNotFoundError:
         raise HTTPException(status_code=400, detail=f"File not found: {file_path}")
@@ -369,10 +458,8 @@ def _query_audd(audio_url: Optional[str], file_path: Optional[str], token: str) 
 
     if resp.status_code != 200:
         raise HTTPException(
-            status_code=502,
-            detail=f"AudD API returned HTTP {resp.status_code}.",
+            status_code=502, detail=f"AudD API returned HTTP {resp.status_code}."
         )
-
     return resp.json()
 
 
@@ -383,28 +470,83 @@ def _extract_match(audd_response: dict) -> AuddMatch:
             status_code=502,
             detail=f"AudD API error: {audd_response.get('error', {}).get('error_message', 'unknown')}",
         )
-
     result = audd_response.get("result")
     if not result:
         raise HTTPException(
             status_code=404,
             detail="No matching track found for the provided audio.",
         )
-
     apple_music_data = result.get("apple_music") or {}
-    apple_music_link: Optional[str] = (
-        apple_music_data.get("url") or None
-    )
-
     return AuddMatch(
         title=result.get("title", "Unknown Title"),
         artist=result.get("artist", "Unknown Artist"),
-        apple_music_link=apple_music_link,
+        apple_music_link=apple_music_data.get("url") or None,
     )
 
 
 # ---------------------------------------------------------------------------
-# Endpoint
+# Helpers — asset clearance
+# ---------------------------------------------------------------------------
+
+
+def _search_copyright_db(asset_name: str) -> Optional[dict]:
+    needle = asset_name.lower()
+    for key, record in MOCK_COPYRIGHT_DB.items():
+        if key in needle or needle in key:
+            return record
+    return None
+
+
+def _estimate_fee(risk_level: str) -> float:
+    return {"high": 25_000.0, "medium": 10_000.0, "low": 2_500.0}.get(risk_level, 5_000.0)
+
+
+def _build_contract_text(
+    template_key: str,
+    clearance_id: str,
+    asset_name: str,
+    timestamp: str,
+    production_title: str,
+    rights_holder: str,
+    clearance_contact: str,
+    estimated_fee: float,
+    approved_by: Optional[str] = None,
+    approved_at: Optional[str] = None,
+) -> str:
+    template = CONTRACT_TEMPLATES.get(template_key, CONTRACT_TEMPLATES["low"])
+    text = template.format(
+        date=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        clearance_id=clearance_id,
+        production_title=production_title,
+        asset_name=asset_name,
+        timestamp=timestamp,
+        rights_holder=rights_holder,
+        clearance_contact=clearance_contact,
+        estimated_fee=estimated_fee,
+    )
+    if approved_by and approved_at:
+        text = text.replace(
+            "Approved by: ______________________    Date: ____________",
+            f"Approved by: {approved_by}    Date: {approved_at}",
+        )
+        text = text.replace("STATUS: PENDING HUMAN APPROVAL", "STATUS: APPROVED")
+    return text
+
+
+def _encode_pdf_payload(contract_text: str, filename: str) -> PdfDraftPayload:
+    """Base64-encode the contract text as an application/pdf payload.
+    Swap this body for ReportLab/WeasyPrint to produce a real binary PDF."""
+    encoded = base64.b64encode(contract_text.encode("utf-8")).decode("ascii")
+    return PdfDraftPayload(
+        filename=filename,
+        content_type="application/pdf",
+        data_base64=encoded,
+        page_count=1,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Endpoints — audio clearance
 # ---------------------------------------------------------------------------
 
 
@@ -451,10 +593,9 @@ async def request_audio_clearance(payload: ClearanceRequest) -> JSONResponse:  #
             "amount_usd": MASTER_LICENSE_BASE_FEE,
         },
     ]
-
     total_fee = sum(lic["amount_usd"] for lic in licenses)
 
-    response_body = {
+    return JSONResponse(status_code=200, content={
         "status": "approved",
         "match": {
             "title": match.title,
@@ -467,83 +608,11 @@ async def request_audio_clearance(payload: ClearanceRequest) -> JSONResponse:  #
         "requested_at": datetime.now(timezone.utc).isoformat(),
         "service": SERVICE_NAME,
         "version": API_VERSION,
-    }
-
-    return JSONResponse(status_code=200, content=response_body)
+    })
 
 
 # ---------------------------------------------------------------------------
-# Helpers — asset clearance
-# ---------------------------------------------------------------------------
-
-
-def _search_copyright_db(asset_name: str) -> Optional[dict]:
-    """Return the first matching mock DB record or None."""
-    needle = asset_name.lower()
-    for key, record in MOCK_COPYRIGHT_DB.items():
-        if key in needle or needle in key:
-            return record
-    return None
-
-
-def _estimate_fee(risk_level: str) -> float:
-    """Return a flat clearance fee estimate based on risk level."""
-    return {"high": 25_000.0, "medium": 10_000.0, "low": 2_500.0}.get(risk_level, 5_000.0)
-
-
-def _build_contract_text(
-    template_key: str,
-    clearance_id: str,
-    asset_name: str,
-    timestamp: str,
-    production_title: str,
-    rights_holder: str,
-    clearance_contact: str,
-    estimated_fee: float,
-    approved_by: Optional[str] = None,
-    approved_at: Optional[str] = None,
-) -> str:
-    """Fill the chosen contract template and optionally stamp an approval."""
-    template = CONTRACT_TEMPLATES.get(template_key, CONTRACT_TEMPLATES["low"])
-    text = template.format(
-        date=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-        clearance_id=clearance_id,
-        production_title=production_title,
-        asset_name=asset_name,
-        timestamp=timestamp,
-        rights_holder=rights_holder,
-        clearance_contact=clearance_contact,
-        estimated_fee=estimated_fee,
-    )
-    if approved_by and approved_at:
-        text = text.replace(
-            "Approved by: ______________________    Date: ____________",
-            f"Approved by: {approved_by}    Date: {approved_at}",
-        )
-        text = text.replace("STATUS: PENDING HUMAN APPROVAL", "STATUS: APPROVED")
-    return text
-
-
-def _encode_pdf_payload(contract_text: str, filename: str) -> PdfDraftPayload:
-    """
-    Encode the contract as a minimal plain-text 'PDF' payload.
-
-    In production swap this body for a real PDF renderer such as ReportLab or
-    WeasyPrint.  The base64-encoded bytes are already valid for download or
-    e-mail attachment — the recipient gets a readable plain-text file.
-    """
-    raw = contract_text.encode("utf-8")
-    encoded = base64.b64encode(raw).decode("ascii")
-    return PdfDraftPayload(
-        filename=filename,
-        content_type="application/pdf",
-        data_base64=encoded,
-        page_count=1,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Endpoint — asset clearance (submit)
+# Endpoints — asset clearance (submit)
 # ---------------------------------------------------------------------------
 
 
@@ -568,14 +637,12 @@ async def submit_asset_clearance(payload: AssetClearanceRequest) -> JSONResponse
     now = datetime.now(timezone.utc).isoformat()
 
     matched = _search_copyright_db(payload.asset_name)
-
     if matched:
         risk_level = matched["risk_level"]
         rights_holder = matched["rights_holder"]
         clearance_contact = matched["clearance_contact"]
         canonical_name = matched["asset_name"]
     else:
-        # Unknown asset — default to medium risk and generic values
         risk_level = "medium"
         rights_holder = "Unknown Rights Holder"
         clearance_contact = "clearance@example.com"
@@ -594,12 +661,9 @@ async def submit_asset_clearance(payload: AssetClearanceRequest) -> JSONResponse
         clearance_contact=clearance_contact,
         estimated_fee=estimated_fee,
     )
+    pdf_payload = _encode_pdf_payload(contract_text, filename=f"{clearance_id}_draft.pdf")
 
-    pdf_payload = _encode_pdf_payload(
-        contract_text, filename=f"{clearance_id}_draft.pdf"
-    )
-
-    record: dict[str, Any] = {
+    _clearance_store[clearance_id] = {
         "clearance_id": clearance_id,
         "status": "pending_human_approval",
         "asset_name": canonical_name,
@@ -616,9 +680,8 @@ async def submit_asset_clearance(payload: AssetClearanceRequest) -> JSONResponse
         "pdf_draft": pdf_payload.model_dump(),
         "submitted_at": now,
     }
-    _clearance_store[clearance_id] = record
 
-    response_body = {
+    return JSONResponse(status_code=200, content={
         "clearance_id": clearance_id,
         "status": "pending_human_approval",
         "asset_name": canonical_name,
@@ -633,12 +696,11 @@ async def submit_asset_clearance(payload: AssetClearanceRequest) -> JSONResponse
             "Review the PDF contract and call POST /api/v1/clearance/approve "
             f"with clearance_id='{clearance_id}' to finalise."
         ),
-    }
-    return JSONResponse(status_code=200, content=response_body)
+    })
 
 
 # ---------------------------------------------------------------------------
-# Endpoint — approve clearance (human-in-the-loop finalisation)
+# Endpoints — asset clearance (approve)
 # ---------------------------------------------------------------------------
 
 
@@ -676,7 +738,6 @@ async def approve_asset_clearance(payload: ApproveRequest) -> JSONResponse:
         )
 
     approved_at = datetime.now(timezone.utc).isoformat()
-
     final_text = _build_contract_text(
         template_key=record["contract_template_used"],
         clearance_id=record["clearance_id"],
@@ -689,18 +750,19 @@ async def approve_asset_clearance(payload: ApproveRequest) -> JSONResponse:
         approved_by=payload.approver_name,
         approved_at=approved_at,
     )
-
     pdf_final = _encode_pdf_payload(
         final_text, filename=f"{record['clearance_id']}_approved.pdf"
     )
 
-    record["status"] = "approved"
-    record["approver_name"] = payload.approver_name
-    record["approver_notes"] = payload.approver_notes
-    record["approved_at"] = approved_at
-    record["pdf_final"] = pdf_final.model_dump()
+    record.update({
+        "status": "approved",
+        "approver_name": payload.approver_name,
+        "approver_notes": payload.approver_notes,
+        "approved_at": approved_at,
+        "pdf_final": pdf_final.model_dump(),
+    })
 
-    response_body = {
+    return JSONResponse(status_code=200, content={
         "clearance_id": record["clearance_id"],
         "status": "approved",
         "asset_name": record["asset_name"],
@@ -712,5 +774,16 @@ async def approve_asset_clearance(payload: ApproveRequest) -> JSONResponse:
             f"Clearance for '{record['asset_name']}' has been approved by "
             f"{payload.approver_name}. The signed PDF contract is attached."
         ),
-    }
-    return JSONResponse(status_code=200, content=response_body)
+    })
+
+
+# ---------------------------------------------------------------------------
+# Static files — MUST be mounted last so /api/... routes are never shadowed.
+# Serves frontend/index.html at http://localhost:8080/ui
+# ---------------------------------------------------------------------------
+
+_frontend_dir = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")
+)
+if os.path.isdir(_frontend_dir):
+    app.mount("/ui", StaticFiles(directory=_frontend_dir, html=True), name="frontend")
