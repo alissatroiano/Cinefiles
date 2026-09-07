@@ -1,8 +1,8 @@
 {
-    "openapi": "3.1.0",
+    "openapi": "3.0.3",
     "info": {
         "title": "Cinefiles Audio Copyright Clearance Service",
-        "description": "Microservice that (1) fingerprints audio clips via the AudD API to estimate Sync & Master licensing fees, and (2) searches a copyright database for visual/brand assets, generates a draft clearance PDF, and enforces a human-in-the-loop approval gate before finalising the clearance.",
+        "description": "Microservice that (1) fingerprints audio clips via the AudD API to estimate Sync & Master licensing fees, (2) accepts known song metadata to calculate the same fees without fingerprinting, and (3) searches a copyright database for visual/brand assets, generates a draft clearance PDF, and enforces a human-in-the-loop approval gate before finalising the clearance.",
         "contact": {
             "name": "Cinefiles",
             "url": "https://github.com/Cinefiles"
@@ -12,6 +12,12 @@
         },
         "version": "1.0.0"
     },
+    "servers": [
+        {
+            "url": "https://cinefiles-backend-543072204876.us-east1.run.app",
+            "description": "Production – Google Cloud Run (us-east1)"
+        }
+    ],
     "paths": {
         "/api/v1/clearance/audio": {
             "post": {
@@ -56,6 +62,41 @@
                     },
                     "504": {
                         "description": "AudD API request timed out."
+                    }
+                }
+            }
+        },
+        "/api/v1/clearance/audio/direct": {
+            "post": {
+                "tags": [
+                    "Clearance"
+                ],
+                "summary": "Request audio clearance by song title and artist",
+                "description": "Accepts song_title, artist, timestamp_start, and timestamp_end directly \u2014 no audio fingerprinting is performed. Calculates estimated Sync ($15,000) and Master ($15,000) licensing fees for the identified track and returns a structured clearance response identical to the fingerprint-based endpoint.",
+                "operationId": "direct_audio_clearance_api_v1_clearance_audio_direct_post",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/DirectClearanceRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Clearance estimate successfully generated.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ClearanceResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation error \u2013 invalid request payload."
                     }
                 }
             }
@@ -139,144 +180,235 @@
     },
     "components": {
         "schemas": {
-            "ApproveRequest": {
+            "DirectClearanceRequest": {
+                "type": "object",
+                "title": "DirectClearanceRequest",
+                "description": "Payload for a direct (metadata-based) audio clearance request. Use when the song is already known \u2014 no audio fingerprinting is performed.",
+                "required": [
+                    "song_title",
+                    "artist",
+                    "timestamp_start",
+                    "timestamp_end"
+                ],
                 "properties": {
-                    "clearance_id": {
-                        "type": "string",
-                        "title": "Clearance Id",
-                        "description": "The clearance_id returned by POST /api/v1/clearance/asset.",
-                        "examples": [
-                            "clr_a1b2c3d4"
-                        ]
-                    },
-                    "approver_name": {
+                    "song_title": {
                         "type": "string",
                         "minLength": 1,
-                        "title": "Approver Name",
-                        "description": "Full name of the human approver.",
-                        "examples": [
-                            "Jane Smith"
-                        ]
+                        "title": "Song Title",
+                        "description": "Title of the copyrighted song.",
+                        "example": "Bohemian Rhapsody"
                     },
-                    "approver_notes": {
-                        "anyOf": [
-                            {
-                                "type": "string"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "title": "Approver Notes",
-                        "description": "Optional notes or conditions attached to the approval.",
-                        "examples": [
-                            "Cleared for festival distribution only."
-                        ]
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "clearance_id",
-                    "approver_name"
-                ],
-                "title": "ApproveRequest",
-                "description": "Payload for the human-approval endpoint."
-            },
-            "ApproveResponse": {
-                "properties": {
-                    "clearance_id": {
+                    "artist": {
                         "type": "string",
-                        "title": "Clearance Id"
+                        "minLength": 1,
+                        "title": "Artist",
+                        "description": "Recording artist or band name.",
+                        "example": "Queen"
                     },
+                    "timestamp_start": {
+                        "type": "string",
+                        "minLength": 1,
+                        "title": "Timestamp Start",
+                        "description": "Timecode where the audio clip begins in the production (e.g. '00:01:30' or '01:30').",
+                        "example": "00:01:30"
+                    },
+                    "timestamp_end": {
+                        "type": "string",
+                        "minLength": 1,
+                        "title": "Timestamp End",
+                        "description": "Timecode where the audio clip ends in the production (e.g. '00:03:45' or '03:45').",
+                        "example": "00:03:45"
+                    }
+                }
+            },
+            "ClearanceRequest": {
+                "type": "object",
+                "title": "ClearanceRequest",
+                "description": "Payload for an audio clearance request. Supply exactly one of audio_url (a publicly accessible URL) or file_path (a server-side absolute or relative path to an audio file).",
+                "properties": {
+                    "audio_url": {
+                        "type": "string",
+                        "nullable": true,
+                        "title": "Audio Url",
+                        "description": "Publicly accessible URL of the audio file to identify.",
+                        "example": "https://example.com/clip.mp3"
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "nullable": true,
+                        "title": "File Path",
+                        "description": "Server-side file-system path to the audio file to identify.",
+                        "example": "/uploads/clip.mp3"
+                    }
+                }
+            },
+            "ClearanceResponse": {
+                "type": "object",
+                "title": "ClearanceResponse",
+                "description": "Full clearance response payload.",
+                "required": [
+                    "status",
+                    "match",
+                    "licenses",
+                    "total_fee_usd",
+                    "currency",
+                    "requested_at",
+                    "service",
+                    "version"
+                ],
+                "properties": {
                     "status": {
                         "type": "string",
-                        "const": "approved",
+                        "enum": [
+                            "approved",
+                            "pending",
+                            "denied"
+                        ],
                         "title": "Status"
                     },
-                    "asset_name": {
+                    "match": {
+                        "$ref": "#/components/schemas/AuddMatch"
+                    },
+                    "licenses": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/LicenseFee"
+                        },
+                        "title": "Licenses"
+                    },
+                    "total_fee_usd": {
+                        "type": "number",
+                        "title": "Total Fee Usd"
+                    },
+                    "currency": {
                         "type": "string",
-                        "title": "Asset Name"
+                        "title": "Currency"
                     },
-                    "approver_name": {
+                    "timestamp_start": {
                         "type": "string",
-                        "title": "Approver Name"
+                        "nullable": true,
+                        "title": "Timestamp Start",
+                        "description": "Start timecode (only present on /audio/direct responses)."
                     },
-                    "approver_notes": {
-                        "anyOf": [
-                            {
-                                "type": "string"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "title": "Approver Notes"
-                    },
-                    "approved_at": {
+                    "timestamp_end": {
                         "type": "string",
-                        "title": "Approved At"
+                        "nullable": true,
+                        "title": "Timestamp End",
+                        "description": "End timecode (only present on /audio/direct responses)."
                     },
-                    "pdf_final": {
-                        "$ref": "#/components/schemas/PdfDraftPayload"
-                    },
-                    "message": {
+                    "requested_at": {
                         "type": "string",
-                        "title": "Message"
+                        "title": "Requested At"
+                    },
+                    "service": {
+                        "type": "string",
+                        "title": "Service"
+                    },
+                    "version": {
+                        "type": "string",
+                        "title": "Version"
                     }
-                },
+                }
+            },
+            "LicenseFee": {
                 "type": "object",
+                "title": "LicenseFee",
+                "description": "Individual licence fee line-item.",
                 "required": [
-                    "clearance_id",
-                    "status",
-                    "asset_name",
-                    "approver_name",
-                    "approver_notes",
-                    "approved_at",
-                    "pdf_final",
-                    "message"
+                    "license_type",
+                    "description",
+                    "amount_usd"
                 ],
-                "title": "ApproveResponse",
-                "description": "Response returned after a clearance is finalised."
+                "properties": {
+                    "license_type": {
+                        "type": "string",
+                        "enum": [
+                            "Sync",
+                            "Master"
+                        ],
+                        "title": "License Type"
+                    },
+                    "description": {
+                        "type": "string",
+                        "title": "Description"
+                    },
+                    "amount_usd": {
+                        "type": "number",
+                        "title": "Amount Usd"
+                    }
+                }
+            },
+            "AuddMatch": {
+                "type": "object",
+                "title": "AuddMatch",
+                "description": "Subset of AudD match data surfaced in the response.",
+                "required": [
+                    "title",
+                    "artist"
+                ],
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "title": "Title"
+                    },
+                    "artist": {
+                        "type": "string",
+                        "title": "Artist"
+                    },
+                    "apple_music_link": {
+                        "type": "string",
+                        "nullable": true,
+                        "title": "Apple Music Link"
+                    }
+                }
             },
             "AssetClearanceRequest": {
+                "type": "object",
+                "title": "AssetClearanceRequest",
+                "description": "Payload for a visual/brand asset clearance request.",
+                "required": [
+                    "asset_name",
+                    "timestamp"
+                ],
                 "properties": {
                     "asset_name": {
                         "type": "string",
                         "minLength": 1,
                         "title": "Asset Name",
                         "description": "Name or description of the asset detected in the footage.",
-                        "examples": [
-                            "Nike Swoosh Logo"
-                        ]
+                        "example": "Nike Swoosh Logo"
                     },
                     "timestamp": {
                         "type": "string",
                         "minLength": 1,
                         "title": "Timestamp",
                         "description": "Timecode in the footage where the asset appears (e.g. '00:04:32').",
-                        "examples": [
-                            "00:04:32"
-                        ]
+                        "example": "00:04:32"
                     },
                     "production_title": {
                         "type": "string",
                         "title": "Production Title",
                         "description": "Title of the film or production for the contract header.",
                         "default": "Untitled Production",
-                        "examples": [
-                            "My Indie Film"
-                        ]
+                        "example": "My Indie Film"
                     }
-                },
-                "type": "object",
-                "required": [
-                    "asset_name",
-                    "timestamp"
-                ],
-                "title": "AssetClearanceRequest",
-                "description": "Payload for a visual/brand asset clearance request."
+                }
             },
             "AssetClearanceResponse": {
+                "type": "object",
+                "title": "AssetClearanceResponse",
+                "description": "Response returned immediately after submitting an asset clearance request.",
+                "required": [
+                    "clearance_id",
+                    "status",
+                    "asset_name",
+                    "risk_level",
+                    "estimated_fee_usd",
+                    "contract_template_used",
+                    "pdf_draft",
+                    "submitted_at",
+                    "message"
+                ],
                 "properties": {
                     "clearance_id": {
                         "type": "string",
@@ -284,7 +416,6 @@
                     },
                     "status": {
                         "type": "string",
-                        "const": "pending_human_approval",
                         "title": "Status"
                     },
                     "asset_name": {
@@ -292,15 +423,8 @@
                         "title": "Asset Name"
                     },
                     "matched_record": {
-                        "anyOf": [
-                            {
-                                "additionalProperties": true,
-                                "type": "object"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
+                        "type": "object",
+                        "nullable": true,
                         "title": "Matched Record"
                     },
                     "risk_level": {
@@ -326,175 +450,98 @@
                         "type": "string",
                         "title": "Message"
                     }
-                },
+                }
+            },
+            "ApproveRequest": {
                 "type": "object",
+                "title": "ApproveRequest",
+                "description": "Payload for the human-approval endpoint.",
+                "required": [
+                    "clearance_id",
+                    "approver_name"
+                ],
+                "properties": {
+                    "clearance_id": {
+                        "type": "string",
+                        "title": "Clearance Id",
+                        "description": "The clearance_id returned by POST /api/v1/clearance/asset.",
+                        "example": "clr_a1b2c3d4"
+                    },
+                    "approver_name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "title": "Approver Name",
+                        "description": "Full name of the human approver.",
+                        "example": "Jane Smith"
+                    },
+                    "approver_notes": {
+                        "type": "string",
+                        "nullable": true,
+                        "title": "Approver Notes",
+                        "description": "Optional notes or conditions attached to the approval.",
+                        "example": "Cleared for festival distribution only."
+                    }
+                }
+            },
+            "ApproveResponse": {
+                "type": "object",
+                "title": "ApproveResponse",
+                "description": "Response returned after a clearance is finalised.",
                 "required": [
                     "clearance_id",
                     "status",
                     "asset_name",
-                    "risk_level",
-                    "estimated_fee_usd",
-                    "contract_template_used",
-                    "pdf_draft",
-                    "submitted_at",
+                    "approver_name",
+                    "approver_notes",
+                    "approved_at",
+                    "pdf_final",
                     "message"
                 ],
-                "title": "AssetClearanceResponse",
-                "description": "Response returned immediately after submitting an asset clearance request."
-            },
-            "AuddMatch": {
                 "properties": {
-                    "title": {
+                    "clearance_id": {
                         "type": "string",
-                        "title": "Title"
+                        "title": "Clearance Id"
                     },
-                    "artist": {
-                        "type": "string",
-                        "title": "Artist"
-                    },
-                    "apple_music_link": {
-                        "anyOf": [
-                            {
-                                "type": "string"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "title": "Apple Music Link"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "title",
-                    "artist"
-                ],
-                "title": "AuddMatch",
-                "description": "Subset of AudD match data surfaced in the response."
-            },
-            "ClearanceRequest": {
-                "properties": {
-                    "audio_url": {
-                        "anyOf": [
-                            {
-                                "type": "string"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "title": "Audio Url",
-                        "description": "Publicly accessible URL of the audio file to identify.",
-                        "examples": [
-                            "https://example.com/clip.mp3"
-                        ]
-                    },
-                    "file_path": {
-                        "anyOf": [
-                            {
-                                "type": "string"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "title": "File Path",
-                        "description": "Server-side file-system path to the audio file to identify.",
-                        "examples": [
-                            "/uploads/clip.mp3"
-                        ]
-                    }
-                },
-                "type": "object",
-                "title": "ClearanceRequest",
-                "description": "Payload for an audio clearance request.\n\nSupply exactly one of `audio_url` (a publicly accessible URL) or\n`file_path` (a server-side absolute or relative path to an audio file)."
-            },
-            "ClearanceResponse": {
-                "properties": {
                     "status": {
                         "type": "string",
-                        "enum": [
-                            "approved",
-                            "pending",
-                            "denied"
-                        ],
                         "title": "Status"
                     },
-                    "match": {
-                        "$ref": "#/components/schemas/AuddMatch"
-                    },
-                    "licenses": {
-                        "items": {
-                            "$ref": "#/components/schemas/LicenseFee"
-                        },
-                        "type": "array",
-                        "title": "Licenses"
-                    },
-                    "total_fee_usd": {
-                        "type": "number",
-                        "title": "Total Fee Usd"
-                    },
-                    "currency": {
+                    "asset_name": {
                         "type": "string",
-                        "const": "USD",
-                        "title": "Currency"
+                        "title": "Asset Name"
                     },
-                    "requested_at": {
+                    "approver_name": {
                         "type": "string",
-                        "title": "Requested At"
+                        "title": "Approver Name"
                     },
-                    "service": {
+                    "approver_notes": {
                         "type": "string",
-                        "title": "Service"
+                        "nullable": true,
+                        "title": "Approver Notes"
                     },
-                    "version": {
+                    "approved_at": {
                         "type": "string",
-                        "title": "Version"
+                        "title": "Approved At"
+                    },
+                    "pdf_final": {
+                        "$ref": "#/components/schemas/PdfDraftPayload"
+                    },
+                    "message": {
+                        "type": "string",
+                        "title": "Message"
                     }
-                },
-                "type": "object",
-                "required": [
-                    "status",
-                    "match",
-                    "licenses",
-                    "total_fee_usd",
-                    "currency",
-                    "requested_at",
-                    "service",
-                    "version"
-                ],
-                "title": "ClearanceResponse",
-                "description": "Full clearance response payload."
-            },
-            "LicenseFee": {
-                "properties": {
-                    "license_type": {
-                        "type": "string",
-                        "enum": [
-                            "Sync",
-                            "Master"
-                        ],
-                        "title": "License Type"
-                    },
-                    "description": {
-                        "type": "string",
-                        "title": "Description"
-                    },
-                    "amount_usd": {
-                        "type": "number",
-                        "title": "Amount Usd"
-                    }
-                },
-                "type": "object",
-                "required": [
-                    "license_type",
-                    "description",
-                    "amount_usd"
-                ],
-                "title": "LicenseFee",
-                "description": "Individual licence fee line-item."
+                }
             },
             "PdfDraftPayload": {
+                "type": "object",
+                "title": "PdfDraftPayload",
+                "description": "Base-64 encoded PDF contract draft.",
+                "required": [
+                    "filename",
+                    "content_type",
+                    "data_base64",
+                    "page_count"
+                ],
                 "properties": {
                     "filename": {
                         "type": "string",
@@ -502,7 +549,6 @@
                     },
                     "content_type": {
                         "type": "string",
-                        "const": "application/pdf",
                         "title": "Content Type"
                     },
                     "data_base64": {
@@ -513,16 +559,7 @@
                         "type": "integer",
                         "title": "Page Count"
                     }
-                },
-                "type": "object",
-                "required": [
-                    "filename",
-                    "content_type",
-                    "data_base64",
-                    "page_count"
-                ],
-                "title": "PdfDraftPayload",
-                "description": "Base-64 encoded PDF contract draft."
+                }
             }
         }
     }

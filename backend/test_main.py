@@ -432,3 +432,135 @@ class TestAssetClearanceApprove:
         cid = self._submit()
         resp = client.post(self.APPROVE_URL, json={"clearance_id": cid})
         assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Direct (metadata-based) audio clearance endpoint
+# ---------------------------------------------------------------------------
+
+DIRECT_PAYLOAD = {
+    "song_title": "Bohemian Rhapsody",
+    "artist": "Queen",
+    "timestamp_start": "00:01:30",
+    "timestamp_end": "00:03:45",
+}
+
+
+class TestDirectAudioClearance:
+    def test_status_200(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert resp.status_code == 200
+
+    def test_response_status_approved(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert resp.json()["status"] == "approved"
+
+    def test_match_title_echoes_song_title(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert resp.json()["match"]["title"] == "Bohemian Rhapsody"
+
+    def test_match_artist_echoes_artist(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert resp.json()["match"]["artist"] == "Queen"
+
+    def test_apple_music_link_is_none(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert resp.json()["match"]["apple_music_link"] is None
+
+    def test_two_licenses_returned(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert len(resp.json()["licenses"]) == 2
+
+    def test_sync_fee_is_15000(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        sync = next(l for l in resp.json()["licenses"] if l["license_type"] == "Sync")
+        assert sync["amount_usd"] == 15_000.00
+
+    def test_master_fee_is_15000(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        master = next(l for l in resp.json()["licenses"] if l["license_type"] == "Master")
+        assert master["amount_usd"] == 15_000.00
+
+    def test_total_fee_is_30000(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert resp.json()["total_fee_usd"] == 30_000.00
+
+    def test_currency_usd(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert resp.json()["currency"] == "USD"
+
+    def test_timestamp_start_echoed(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert resp.json()["timestamp_start"] == "00:01:30"
+
+    def test_timestamp_end_echoed(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert resp.json()["timestamp_end"] == "00:03:45"
+
+    def test_requested_at_present(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert resp.json()["requested_at"]
+
+    def test_service_name_present(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert "Cinefiles" in resp.json()["service"]
+
+    def test_version_present(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert resp.json()["version"]
+
+    def test_rejects_missing_song_title(self):
+        resp = client.post(
+            "/api/v1/clearance/audio/direct",
+            json={"artist": "Queen", "timestamp_start": "00:01:30", "timestamp_end": "00:03:45"},
+        )
+        assert resp.status_code == 422
+
+    def test_rejects_missing_artist(self):
+        resp = client.post(
+            "/api/v1/clearance/audio/direct",
+            json={"song_title": "Song", "timestamp_start": "00:01:30", "timestamp_end": "00:03:45"},
+        )
+        assert resp.status_code == 422
+
+    def test_rejects_missing_timestamp_start(self):
+        resp = client.post(
+            "/api/v1/clearance/audio/direct",
+            json={"song_title": "Song", "artist": "Artist", "timestamp_end": "00:03:45"},
+        )
+        assert resp.status_code == 422
+
+    def test_rejects_missing_timestamp_end(self):
+        resp = client.post(
+            "/api/v1/clearance/audio/direct",
+            json={"song_title": "Song", "artist": "Artist", "timestamp_start": "00:01:30"},
+        )
+        assert resp.status_code == 422
+
+    def test_rejects_empty_body(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json={})
+        assert resp.status_code == 422
+
+    def test_rejects_blank_song_title(self):
+        resp = client.post(
+            "/api/v1/clearance/audio/direct",
+            json={**DIRECT_PAYLOAD, "song_title": ""},
+        )
+        assert resp.status_code == 422
+
+    def test_rejects_blank_artist(self):
+        resp = client.post(
+            "/api/v1/clearance/audio/direct",
+            json={**DIRECT_PAYLOAD, "artist": ""},
+        )
+        assert resp.status_code == 422
+
+    def test_sync_license_description_present(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        sync = next(l for l in resp.json()["licenses"] if l["license_type"] == "Sync")
+        assert sync["description"]
+
+    def test_master_license_description_present(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        master = next(l for l in resp.json()["licenses"] if l["license_type"] == "Master")
+        assert master["description"]
