@@ -19,7 +19,10 @@ from fastapi.testclient import TestClient
 # doesn't raise during module-level TestClient construction.
 os.environ.setdefault("AUDD_API_TOKEN", "test-token")
 
-from main import app, _extract_match, _get_audd_token, AuddMatch  # noqa: E402
+from main import (  # noqa: E402
+    app, _extract_match, _get_audd_token, _is_royalty_free, _build_audio_licenses,
+    AuddMatch, SYNC_LICENSE_BASE_FEE, MASTER_LICENSE_BASE_FEE,
+)
 
 client = TestClient(app, raise_server_exceptions=False)
 
@@ -260,3 +263,473 @@ class TestExtractMatch:
         }
         match = _extract_match(payload)
         assert match.apple_music_link is None
+
+
+# ---------------------------------------------------------------------------
+# Asset clearance — POST /api/v1/clearance/asset
+# ---------------------------------------------------------------------------
+
+
+class TestAssetClearanceSubmit:
+    URL = "/api/v1/clearance/asset"
+
+    def _post(self, body: dict):
+        return client.post(self.URL, json=body)
+
+    # ── Validation ──────────────────────────────────────────────────────────
+
+    def test_rejects_missing_asset_name(self):
+        assert self._post({"timestamp": "00:01:00"}).status_code == 422
+
+    def test_rejects_missing_timestamp(self):
+        assert self._post({"asset_name": "Nike Logo"}).status_code == 422
+
+    def test_rejects_empty_asset_name(self):
+        assert self._post({"asset_name": "", "timestamp": "00:01:00"}).status_code == 422
+
+    # ── Known asset (Nike → high risk) ──────────────────────────────────────
+
+    def test_returns_200_for_known_asset(self):
+        resp = self._post({"asset_name": "Nike Swoosh", "timestamp": "00:02:15"})
+        assert resp.status_code == 200
+
+    def test_status_is_pending_human_approval(self):
+        resp = self._post({"asset_name": "Nike Swoosh", "timestamp": "00:02:15"})
+        assert resp.json()["status"] == "pending_human_approval"
+
+    def test_clearance_id_present(self):
+        resp = self._post({"asset_name": "Nike Swoosh", "timestamp": "00:02:15"})
+        cid = resp.json().get("clearance_id", "")
+        assert cid.startswith("clr_")
+
+    def test_risk_level_high_for_nike(self):
+        resp = self._post({"asset_name": "Nike logo on hoodie", "timestamp": "00:00:30"})
+        assert resp.json()["risk_level"] == "high"
+
+    def test_estimated_fee_high_risk(self):
+        resp = self._post({"asset_name": "Nike logo", "timestamp": "00:00:30"})
+        assert resp.json()["estimated_fee_usd"] == 25_000.0
+
+    def test_matched_record_returned(self):
+        resp = self._post({"asset_name": "Nike logo", "timestamp": "00:00:30"})
+        assert resp.json()["matched_record"] is not None
+        assert resp.json()["matched_record"]["rights_holder"] == "Nike, Inc."
+
+    def test_pdf_draft_present(self):
+        resp = self._post({"asset_name": "Nike logo", "timestamp": "00:00:30"})
+        pdf = resp.json()["pdf_draft"]
+        assert pdf["content_type"] == "application/pdf"
+        assert pdf["data_base64"]
+        assert pdf["page_count"] == 1
+
+    def test_pdf_filename_has_draft_suffix(self):
+        resp = self._post({"asset_name": "Nike logo", "timestamp": "00:00:30"})
+        assert "_draft.pdf" in resp.json()["pdf_draft"]["filename"]
+
+    def test_message_contains_approve_instruction(self):
+        resp = self._post({"asset_name": "Nike logo", "timestamp": "00:00:30"})
+        assert "approve" in resp.json()["message"].lower()
+
+    # ── Unknown asset (falls back to medium risk) ────────────────────────────
+
+    def test_unknown_asset_returns_medium_risk(self):
+        resp = self._post({"asset_name": "Random Brand XYZ", "timestamp": "00:05:00"})
+        assert resp.json()["risk_level"] == "medium"
+
+    def test_unknown_asset_fee_is_10000(self):
+        resp = self._post({"asset_name": "Totally Unknown Brand", "timestamp": "00:05:00"})
+        assert resp.json()["estimated_fee_usd"] == 10_000.0
+
+    def test_unknown_asset_matched_record_is_none(self):
+        resp = self._post({"asset_name": "Totally Unknown Brand 999", "timestamp": "00:05:00"})
+        assert resp.json()["matched_record"] is None
+
+    # ── Production title optional field ─────────────────────────────────────
+
+    def test_custom_production_title_accepted(self):
+        resp = self._post({
+            "asset_name": "Starbucks cup",
+            "timestamp": "00:10:00",
+            "production_title": "My Indie Film",
+        })
+        assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Asset clearance — POST /api/v1/clearance/approve
+# ---------------------------------------------------------------------------
+
+
+class TestAssetClearanceApprove:
+    ASSET_URL   = "/api/v1/clearance/asset"
+    APPROVE_URL = "/api/v1/clearance/approve"
+
+    def _submit(self, asset_name="Nike logo", timestamp="00:01:00") -> str:
+        """Submit a clearance and return the clearance_id."""
+        resp = client.post(self.ASSET_URL, json={"asset_name": asset_name, "timestamp": timestamp})
+        assert resp.status_code == 200
+        return resp.json()["clearance_id"]
+
+    def _approve(self, clearance_id: str, name="Jane Smith", notes=None):
+        body = {"clearance_id": clearance_id, "approver_name": name}
+        if notes:
+            body["approver_notes"] = notes
+        return client.post(self.APPROVE_URL, json=body)
+
+    # ── Happy path ───────────────────────────────────────────────────────────
+
+    def test_approve_returns_200(self):
+        cid = self._submit()
+        assert self._approve(cid).status_code == 200
+
+    def test_approved_status(self):
+        cid = self._submit()
+        assert self._approve(cid).json()["status"] == "approved"
+
+    def test_approver_name_echoed(self):
+        cid = self._submit()
+        resp = self._approve(cid, name="John Doe")
+        assert resp.json()["approver_name"] == "John Doe"
+
+    def test_approver_notes_echoed(self):
+        cid = self._submit()
+        resp = self._approve(cid, notes="Festival use only.")
+        assert resp.json()["approver_notes"] == "Festival use only."
+
+    def test_approved_at_present(self):
+        cid = self._submit()
+        assert self._approve(cid).json()["approved_at"]
+
+    def test_final_pdf_present(self):
+        cid = self._submit()
+        pdf = self._approve(cid).json()["pdf_final"]
+        assert pdf["content_type"] == "application/pdf"
+        assert pdf["data_base64"]
+
+    def test_final_pdf_filename_has_approved_suffix(self):
+        cid = self._submit()
+        pdf = self._approve(cid).json()["pdf_final"]
+        assert "_approved.pdf" in pdf["filename"]
+
+    def test_message_contains_approver_name(self):
+        cid = self._submit()
+        resp = self._approve(cid, name="Alice")
+        assert "Alice" in resp.json()["message"]
+
+    # ── Error cases ──────────────────────────────────────────────────────────
+
+    def test_unknown_clearance_id_returns_404(self):
+        resp = client.post(self.APPROVE_URL, json={
+            "clearance_id": "clr_doesnotexist",
+            "approver_name": "Bob",
+        })
+        assert resp.status_code == 404
+
+    def test_double_approve_returns_409(self):
+        cid = self._submit()
+        self._approve(cid)                    # first approval — OK
+        resp = self._approve(cid)             # second approval — conflict
+        assert resp.status_code == 409
+
+    def test_missing_approver_name_returns_422(self):
+        cid = self._submit()
+        resp = client.post(self.APPROVE_URL, json={"clearance_id": cid})
+        assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# _is_royalty_free() unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestIsRoyaltyFree:
+    def test_commercial_artist_returns_false(self):
+        assert _is_royalty_free("Blinding Lights", "The Weeknd") is False
+
+    def test_royalty_free_keyword_in_artist(self):
+        assert _is_royalty_free("Happy Tune", "Royalty Free Music Co") is True
+
+    def test_royalty_free_hyphenated_in_artist(self):
+        assert _is_royalty_free("Chill Beat", "royalty-free sounds") is True
+
+    def test_creative_commons_in_artist(self):
+        assert _is_royalty_free("Sunrise", "Creative Commons Artist") is True
+
+    def test_cc0_in_title(self):
+        assert _is_royalty_free("CC0 Ambient Pad", "Unknown") is True
+
+    def test_public_domain_in_title(self):
+        assert _is_royalty_free("Public Domain Waltz", "Composer") is True
+
+    def test_pixabay_in_artist(self):
+        assert _is_royalty_free("Upbeat Track", "Pixabay Music") is True
+
+    def test_incompetech_in_artist(self):
+        assert _is_royalty_free("Galway", "Incompetech") is True
+
+    def test_bensound_in_title(self):
+        assert _is_royalty_free("Bensound Epic", "Various") is True
+
+    def test_no_copyright_in_title(self):
+        assert _is_royalty_free("No Copyright Music 2024", "VlogBeats") is True
+
+    def test_rf_label_in_audd_result(self):
+        audd_raw = {"result": {"title": "Track", "artist": "X", "label": "Epidemic Sound"}}
+        assert _is_royalty_free("Track", "X", audd_raw) is True
+
+    def test_jamendo_label(self):
+        audd_raw = {"result": {"title": "Beat", "artist": "Y", "label": "Jamendo"}}
+        assert _is_royalty_free("Beat", "Y", audd_raw) is True
+
+    def test_low_confidence_score(self):
+        audd_raw = {"result": {"title": "Ambiguous", "artist": "Z", "score": 30}}
+        assert _is_royalty_free("Ambiguous", "Z", audd_raw) is True
+
+    def test_high_confidence_score_commercial(self):
+        audd_raw = {"result": {"title": "Blinding Lights", "artist": "The Weeknd", "score": 95}}
+        assert _is_royalty_free("Blinding Lights", "The Weeknd", audd_raw) is False
+
+    def test_boundary_score_49_is_free(self):
+        audd_raw = {"result": {"score": 49}}
+        assert _is_royalty_free("Track", "Artist", audd_raw) is True
+
+    def test_boundary_score_50_is_commercial(self):
+        audd_raw = {"result": {"score": 50}}
+        assert _is_royalty_free("Track", "Artist", audd_raw) is False
+
+    def test_case_insensitive_artist(self):
+        assert _is_royalty_free("Song", "ROYALTY FREE BEATS") is True
+
+    def test_case_insensitive_title(self):
+        assert _is_royalty_free("CREATIVE COMMONS HIT", "Artist") is True
+
+    def test_none_audd_raw_safe(self):
+        assert _is_royalty_free("Song", "Artist", None) is False
+
+
+# ---------------------------------------------------------------------------
+# _build_audio_licenses() unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestBuildAudioLicenses:
+    def test_commercial_returns_two_licenses(self):
+        assert len(_build_audio_licenses(False)) == 2
+
+    def test_commercial_sync_fee(self):
+        sync = next(l for l in _build_audio_licenses(False) if l["license_type"] == "Sync")
+        assert sync["amount_usd"] == SYNC_LICENSE_BASE_FEE
+
+    def test_commercial_master_fee(self):
+        master = next(l for l in _build_audio_licenses(False) if l["license_type"] == "Master")
+        assert master["amount_usd"] == MASTER_LICENSE_BASE_FEE
+
+    def test_royalty_free_sync_fee_is_zero(self):
+        sync = next(l for l in _build_audio_licenses(True) if l["license_type"] == "Sync")
+        assert sync["amount_usd"] == 0.0
+
+    def test_royalty_free_master_fee_is_zero(self):
+        master = next(l for l in _build_audio_licenses(True) if l["license_type"] == "Master")
+        assert master["amount_usd"] == 0.0
+
+    def test_royalty_free_description_mentions_creative_commons(self):
+        sync = next(l for l in _build_audio_licenses(True) if l["license_type"] == "Sync")
+        assert "Royalty-Free" in sync["description"] or "Creative Commons" in sync["description"]
+
+
+# ---------------------------------------------------------------------------
+# /api/v1/clearance/audio — royalty_free field in response
+# ---------------------------------------------------------------------------
+
+
+class TestAudioClearanceRoyaltyFreeField:
+    def test_commercial_track_royalty_free_is_false(self):
+        with patch("main._query_audd", return_value=AUDD_SUCCESS):
+            resp = client.post(
+                "/api/v1/clearance/audio",
+                json={"audio_url": "https://example.com/clip.mp3"},
+            )
+        assert resp.json()["royalty_free"] is False
+
+    def test_commercial_track_total_fee_is_30000(self):
+        with patch("main._query_audd", return_value=AUDD_SUCCESS):
+            resp = client.post(
+                "/api/v1/clearance/audio",
+                json={"audio_url": "https://example.com/clip.mp3"},
+            )
+        assert resp.json()["total_fee_usd"] == 30_000.0
+
+    def test_royalty_free_track_detected_via_artist(self):
+        rf_audd = {
+            "status": "success",
+            "result": {
+                "title": "Happy Beats",
+                "artist": "Royalty Free Music",
+                "apple_music": {},
+            },
+        }
+        with patch("main._query_audd", return_value=rf_audd):
+            resp = client.post(
+                "/api/v1/clearance/audio",
+                json={"audio_url": "https://example.com/rf.mp3"},
+            )
+        assert resp.json()["royalty_free"] is True
+
+    def test_royalty_free_track_total_fee_is_zero(self):
+        rf_audd = {
+            "status": "success",
+            "result": {
+                "title": "Happy Beats",
+                "artist": "Royalty Free Music",
+                "apple_music": {},
+            },
+        }
+        with patch("main._query_audd", return_value=rf_audd):
+            resp = client.post(
+                "/api/v1/clearance/audio",
+                json={"audio_url": "https://example.com/rf.mp3"},
+            )
+        assert resp.json()["total_fee_usd"] == 0.0
+
+    def test_royalty_free_sync_fee_is_zero(self):
+        rf_audd = {
+            "status": "success",
+            "result": {"title": "Chill", "artist": "CC0 Sounds", "apple_music": {}},
+        }
+        with patch("main._query_audd", return_value=rf_audd):
+            resp = client.post(
+                "/api/v1/clearance/audio",
+                json={"audio_url": "https://example.com/cc.mp3"},
+            )
+        sync = next(l for l in resp.json()["licenses"] if l["license_type"] == "Sync")
+        assert sync["amount_usd"] == 0.0
+
+    def test_low_confidence_score_gives_zero_fee(self):
+        low_conf = {
+            "status": "success",
+            "result": {"title": "Ambient", "artist": "Unknown", "apple_music": {}, "score": 20},
+        }
+        with patch("main._query_audd", return_value=low_conf):
+            resp = client.post(
+                "/api/v1/clearance/audio",
+                json={"audio_url": "https://example.com/lo.mp3"},
+            )
+        assert resp.json()["total_fee_usd"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# /api/v1/clearance/audio/direct — restored + royalty-free logic
+# ---------------------------------------------------------------------------
+
+DIRECT_PAYLOAD = {
+    "song_title": "Bohemian Rhapsody",
+    "artist": "Queen",
+    "timestamp_start": "00:01:30",
+    "timestamp_end": "00:03:45",
+}
+
+DIRECT_RF_PAYLOAD = {
+    "song_title": "CC0 Ambient Drone",
+    "artist": "Pixabay Music",
+    "timestamp_start": "00:00:10",
+    "timestamp_end": "00:01:00",
+}
+
+
+class TestDirectAudioClearance:
+    def test_status_200(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert resp.status_code == 200
+
+    def test_response_status_approved(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert resp.json()["status"] == "approved"
+
+    def test_commercial_royalty_free_false(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert resp.json()["royalty_free"] is False
+
+    def test_commercial_total_fee_30000(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert resp.json()["total_fee_usd"] == 30_000.0
+
+    def test_match_title_echoes_song_title(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert resp.json()["match"]["title"] == "Bohemian Rhapsody"
+
+    def test_match_artist_echoes_artist(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert resp.json()["match"]["artist"] == "Queen"
+
+    def test_apple_music_link_is_none(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert resp.json()["match"]["apple_music_link"] is None
+
+    def test_two_licenses_returned(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert len(resp.json()["licenses"]) == 2
+
+    def test_sync_fee_15000_for_commercial(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        sync = next(l for l in resp.json()["licenses"] if l["license_type"] == "Sync")
+        assert sync["amount_usd"] == 15_000.0
+
+    def test_master_fee_15000_for_commercial(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        master = next(l for l in resp.json()["licenses"] if l["license_type"] == "Master")
+        assert master["amount_usd"] == 15_000.0
+
+    def test_currency_usd(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert resp.json()["currency"] == "USD"
+
+    def test_timestamp_start_echoed(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert resp.json()["timestamp_start"] == "00:01:30"
+
+    def test_timestamp_end_echoed(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert resp.json()["timestamp_end"] == "00:03:45"
+
+    def test_requested_at_present(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_PAYLOAD)
+        assert resp.json()["requested_at"]
+
+    def test_royalty_free_artist_gives_zero_fee(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_RF_PAYLOAD)
+        assert resp.json()["total_fee_usd"] == 0.0
+
+    def test_royalty_free_artist_sets_flag(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_RF_PAYLOAD)
+        assert resp.json()["royalty_free"] is True
+
+    def test_royalty_free_description_in_licenses(self):
+        resp = client.post("/api/v1/clearance/audio/direct", json=DIRECT_RF_PAYLOAD)
+        sync = next(l for l in resp.json()["licenses"] if l["license_type"] == "Sync")
+        assert "Royalty-Free" in sync["description"] or "Creative Commons" in sync["description"]
+
+    def test_rejects_missing_song_title(self):
+        p = {**DIRECT_PAYLOAD}; del p["song_title"]
+        assert client.post("/api/v1/clearance/audio/direct", json=p).status_code == 422
+
+    def test_rejects_missing_artist(self):
+        p = {**DIRECT_PAYLOAD}; del p["artist"]
+        assert client.post("/api/v1/clearance/audio/direct", json=p).status_code == 422
+
+    def test_rejects_missing_timestamp_start(self):
+        p = {**DIRECT_PAYLOAD}; del p["timestamp_start"]
+        assert client.post("/api/v1/clearance/audio/direct", json=p).status_code == 422
+
+    def test_rejects_missing_timestamp_end(self):
+        p = {**DIRECT_PAYLOAD}; del p["timestamp_end"]
+        assert client.post("/api/v1/clearance/audio/direct", json=p).status_code == 422
+
+    def test_rejects_blank_song_title(self):
+        assert client.post(
+            "/api/v1/clearance/audio/direct", json={**DIRECT_PAYLOAD, "song_title": ""}
+        ).status_code == 422
+
+    def test_rejects_blank_artist(self):
+        assert client.post(
+            "/api/v1/clearance/audio/direct", json={**DIRECT_PAYLOAD, "artist": ""}
+        ).status_code == 422
