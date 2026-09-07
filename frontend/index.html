@@ -9,7 +9,7 @@
     <!-- Compiled Tailwind stylesheet — built from frontend/src/styles.css -->
     <!-- To rebuild: cd frontend && npm run build   (or npm run dev to watch) -->
     <link rel="stylesheet" href="dist/styles.css" />
-
+    <link rel="stylesheet" href="src/styles.css" />
     <!-- Inter font -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -67,10 +67,6 @@
             background: #4b5563;
             border-radius: 3px;
         }
-        
-        textarea.input-box {
-            color: #4c1d95;
-        }
     </style>
 
     <!-- Dialogflow CX Messenger — Google-provided embed (prod/v1) -->
@@ -85,8 +81,7 @@
     <header class="border-b border-gray-800 bg-gray-950/80 backdrop-blur sticky top-0 z-40">
         <div class="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
             <div class="flex items-center gap-3">
-                <img src="../public/lightlogo.png" alt="Cinefiles" class="h-8 w-auto" />
-                <span class="text-sm text-gray-500 tracking-widest uppercase font-medium">Clearance</span>
+                <img src="lightlogo.png" alt="Cinefiles" class="max-w-5xl" />
             </div>
             <span class="text-xs text-gray-600 hidden sm:block">
         Powered by <span class="text-brand-light">Gemini Enterprise</span> &amp;
@@ -118,7 +113,7 @@
                 </button>
                 <button id="tabUpload" onclick="switchTab('upload')" class="px-4 py-1.5 rounded-lg text-sm font-medium transition
                                text-gray-400 hover:text-gray-200">
-                    Upload File
+                    File Upload
                 </button>
             </div>
 
