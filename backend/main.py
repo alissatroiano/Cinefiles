@@ -3,9 +3,10 @@ Cinefiles – Audio Copyright Clearance Microservice
 
 Endpoints
 ---------
-POST /api/v1/clearance/audio   – AudD audio fingerprint + fee estimate
-POST /api/v1/clearance/asset   – Mock copyright DB lookup + PDF draft + human-approval gate
-POST /api/v1/clearance/approve – Finalise a pending asset clearance after human review
+POST /api/v1/clearance/audio          – AudD audio fingerprint + fee estimate (URL or file path)
+POST /api/v1/clearance/audio/direct   – Fee estimate by song title + artist + timestamps (no fingerprint)
+POST /api/v1/clearance/asset          – Mock copyright DB lookup + PDF draft + human-approval gate
+POST /api/v1/clearance/approve        – Finalise a pending asset clearance after human review
 
 Audio fingerprinting is performed by the AudD API (https://api.audd.io/).
 The AudD API token must be set in the AUDD_API_TOKEN environment variable.
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import os
+import tempfile
 import textwrap
 import uuid
 from datetime import datetime, timezone
@@ -24,7 +26,7 @@ from typing import Any, Literal, Optional
 
 import requests as http_client
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -197,6 +199,46 @@ class ClearanceRequest(BaseModel):
                 "Provide exactly one of 'audio_url' or 'file_path', not both or neither."
             )
         return self
+
+
+class DirectClearanceRequest(BaseModel):
+    """Payload for a direct (metadata-based) audio clearance request.
+
+    Use when the song is already known — no audio fingerprinting is performed.
+    Provide the song title, artist, and the clip's start/end timestamps within
+    the production (in ``HH:MM:SS`` or ``MM:SS`` format, or fractional seconds).
+    """
+
+    song_title: str = Field(
+        ...,
+        min_length=1,
+        description="Title of the copyrighted song.",
+        examples=["Bohemian Rhapsody"],
+    )
+    artist: str = Field(
+        ...,
+        min_length=1,
+        description="Recording artist or band name.",
+        examples=["Queen"],
+    )
+    timestamp_start: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Timecode where the audio clip begins in the production "
+            "(e.g. '00:01:30' or '01:30')."
+        ),
+        examples=["00:01:30"],
+    )
+    timestamp_end: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Timecode where the audio clip ends in the production "
+            "(e.g. '00:03:45' or '03:45')."
+        ),
+        examples=["00:03:45"],
+    )
 
 
 class LicenseFee(BaseModel):
@@ -612,6 +654,66 @@ async def request_audio_clearance(payload: ClearanceRequest) -> JSONResponse:  #
 
 
 # ---------------------------------------------------------------------------
+# Endpoint — direct (metadata-based) audio clearance
+# ---------------------------------------------------------------------------
+
+
+@app.post(
+    "/api/v1/clearance/audio/direct",
+    response_model=ClearanceResponse,
+    summary="Request audio clearance by song title and artist",
+    description=(
+        "Accepts song_title, artist, timestamp_start, and timestamp_end directly — "
+        "no audio fingerprinting is performed. Calculates estimated Sync ($15,000) and "
+        "Master ($15,000) licensing fees for the identified track and returns a "
+        "structured clearance response identical to the fingerprint-based endpoint."
+    ),
+    tags=["Clearance"],
+    responses={
+        200: {"description": "Clearance estimate successfully generated."},
+        422: {"description": "Validation error – invalid request payload."},
+    },
+)
+async def direct_audio_clearance(payload: DirectClearanceRequest) -> JSONResponse:
+    licenses: list[dict] = [
+        {
+            "license_type": "Sync",
+            "description": (
+                "Synchronisation licence – grants the right to pair the "
+                "musical composition with visual media."
+            ),
+            "amount_usd": SYNC_LICENSE_BASE_FEE,
+        },
+        {
+            "license_type": "Master",
+            "description": (
+                "Master recording licence – grants the right to use the "
+                "specific sound recording owned by the record label."
+            ),
+            "amount_usd": MASTER_LICENSE_BASE_FEE,
+        },
+    ]
+    total_fee = sum(lic["amount_usd"] for lic in licenses)
+
+    return JSONResponse(status_code=200, content={
+        "status": "approved",
+        "match": {
+            "title": payload.song_title,
+            "artist": payload.artist,
+            "apple_music_link": None,
+        },
+        "licenses": licenses,
+        "total_fee_usd": total_fee,
+        "currency": "USD",
+        "timestamp_start": payload.timestamp_start,
+        "timestamp_end": payload.timestamp_end,
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+        "service": SERVICE_NAME,
+        "version": API_VERSION,
+    })
+
+
+# ---------------------------------------------------------------------------
 # Endpoints — asset clearance (submit)
 # ---------------------------------------------------------------------------
 
@@ -774,6 +876,112 @@ async def approve_asset_clearance(payload: ApproveRequest) -> JSONResponse:
             f"Clearance for '{record['asset_name']}' has been approved by "
             f"{payload.approver_name}. The signed PDF contract is attached."
         ),
+    })
+
+
+# ---------------------------------------------------------------------------
+# Endpoint — audio file upload (multipart/form-data)
+# ---------------------------------------------------------------------------
+
+ALLOWED_AUDIO_TYPES = {
+    "audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav",
+    "audio/aac", "audio/ogg", "audio/flac", "audio/mp4",
+    "audio/x-m4a", "video/mp4",
+}
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB
+
+
+@app.post(
+    "/api/v1/clearance/audio/upload",
+    response_model=ClearanceResponse,
+    summary="Upload an audio file for copyright clearance",
+    description=(
+        "Accepts a multipart/form-data audio file upload (MP3, WAV, AAC, OGG, FLAC — "
+        "max 25 MB), fingerprints it via the AudD API, and returns the same structured "
+        "clearance response as the URL-based endpoint."
+    ),
+    tags=["Clearance"],
+    responses={
+        200: {"description": "Clearance estimate successfully generated."},
+        400: {"description": "Invalid or unsupported file type / file too large."},
+        422: {"description": "Validation error – missing file field."},
+        502: {"description": "AudD API error or unreachable."},
+        504: {"description": "AudD API request timed out."},
+    },
+)
+async def upload_audio_clearance(
+    audio_file: UploadFile = File(..., description="Audio file to fingerprint (MP3, WAV, AAC, OGG, FLAC — max 25 MB)"),
+) -> JSONResponse:
+    # ── Validate content type ─────────────────────────────────────────────
+    content_type = (audio_file.content_type or "").lower().split(";")[0].strip()
+    if content_type not in ALLOWED_AUDIO_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported file type '{content_type}'. "
+                "Accepted: MP3, WAV, AAC, OGG, FLAC, M4A."
+            ),
+        )
+
+    # ── Read and size-check ───────────────────────────────────────────────
+    data = await audio_file.read()
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large ({len(data) // (1024*1024)} MB). Maximum is 25 MB.",
+        )
+
+    token = _get_audd_token()
+
+    # ── Write to temp file and call AudD ─────────────────────────────────
+    suffix = os.path.splitext(audio_file.filename or "clip.mp3")[1] or ".mp3"
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+
+        audd_response = _query_audd(audio_url=None, file_path=tmp_path, token=token)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    match = _extract_match(audd_response)
+
+    licenses: list[dict] = [
+        {
+            "license_type": "Sync",
+            "description": (
+                "Synchronisation licence – grants the right to pair the "
+                "musical composition with visual media."
+            ),
+            "amount_usd": SYNC_LICENSE_BASE_FEE,
+        },
+        {
+            "license_type": "Master",
+            "description": (
+                "Master recording licence – grants the right to use the "
+                "specific sound recording owned by the record label."
+            ),
+            "amount_usd": MASTER_LICENSE_BASE_FEE,
+        },
+    ]
+    total_fee = sum(lic["amount_usd"] for lic in licenses)
+
+    return JSONResponse(status_code=200, content={
+        "status": "approved",
+        "match": {
+            "title": match.title,
+            "artist": match.artist,
+            "apple_music_link": match.apple_music_link,
+        },
+        "licenses": licenses,
+        "total_fee_usd": total_fee,
+        "currency": "USD",
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+        "service": SERVICE_NAME,
+        "version": API_VERSION,
     })
 
 

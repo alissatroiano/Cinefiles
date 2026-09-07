@@ -1,0 +1,146 @@
+/* =============================================================================
+   Cinefiles — Source stylesheet
+   Edit this file to customise the dashboard appearance.
+   After saving, run:  npm run dev   (watch) or  npm run build  (production)
+   Output is written to frontend/dist/styles.css
+   ============================================================================= */
+
+/* ── Tailwind layers ───────────────────────────────────────────────────────── */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Base ──────────────────────────────────────────────────────────────────── */
+@layer base {
+    /* dark class is set on <html> in the markup — not applied via @apply */
+    body {
+        @apply text-gray-100 font-sans min-h-screen flex flex-col;
+        background-color: #030712; /* surface-deep / gray-950 */
+        -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Custom scrollbar ───────────────────────────────────────────────── */
+    ::-webkit-scrollbar              { width: 6px; }
+    ::-webkit-scrollbar-track        { background: #030712; }
+    ::-webkit-scrollbar-thumb        { @apply bg-gray-600 rounded; }
+    ::-webkit-scrollbar-thumb:hover  { @apply bg-gray-500; }
+}
+
+/* ── Components ────────────────────────────────────────────────────────────── */
+@layer components {
+
+    /* ── Film-grain scanline overlay ────────────────────────────────────── */
+    .scanlines::before {
+        content: '';
+        position: fixed;
+        inset: 0;
+        background-image: repeating-linear-gradient(
+            0deg,
+            transparent,
+            transparent 2px,
+            rgba(255, 255, 255, 0.015) 2px,
+            rgba(255, 255, 255, 0.015) 4px
+        );
+        pointer-events: none;
+        z-index: 50;
+    }
+
+    /* ── Card ───────────────────────────────────────────────────────────── */
+    .card {
+        @apply border border-gray-800 rounded-2xl;
+        background-color: #111827; /* gray-900 */
+    }
+
+    .card-raised {
+        @apply border border-gray-700 rounded-2xl;
+        background-color: #1f2937; /* gray-800 */
+    }
+
+    /* ── Input ──────────────────────────────────────────────────────────── */
+    .input {
+        @apply w-full border border-gray-700 rounded-xl
+               px-4 py-3 text-sm text-gray-100 placeholder-gray-600
+               focus:outline-none focus:ring-2 focus:ring-brand focus:border-transparent
+               transition;
+        background-color: #1f2937; /* gray-800 */
+    }
+
+    /* ── Buttons ────────────────────────────────────────────────────────── */
+    .btn-primary {
+        @apply inline-flex items-center justify-center gap-2
+               px-6 py-3 bg-violet-700 hover:bg-violet-800 active:bg-violet-900
+               text-white text-sm font-semibold rounded-xl
+               transition disabled:opacity-40 disabled:cursor-not-allowed
+               focus:outline-none focus:ring-2 focus:ring-violet-500
+               focus:ring-offset-2;
+    }
+
+    .btn-ghost {
+        @apply inline-flex items-center gap-1 text-brand-light text-sm
+               hover:underline focus:outline-none transition;
+    }
+
+    /* ── Status badges ──────────────────────────────────────────────────── */
+    .badge {
+        @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold;
+    }
+
+    .badge-approved { @apply bg-green-900/60 text-green-400; }
+    .badge-pending  { @apply bg-yellow-900/60 text-yellow-400; }
+    .badge-denied   { @apply bg-red-900/60 text-red-400; }
+
+    /* ── Section divider ────────────────────────────────────────────────── */
+    .divider {
+        @apply flex items-center gap-2;
+    }
+
+    .divider::before,
+    .divider::after {
+        content: '';
+        @apply flex-1 h-px bg-gray-800;
+    }
+
+    /* ── Disclaimer block ───────────────────────────────────────────────── */
+    .disclaimer {
+        @apply px-6 py-4 bg-yellow-950/30 border-t border-yellow-900/40
+               text-xs text-yellow-500/80 leading-relaxed;
+    }
+}
+
+/* ── Utilities ─────────────────────────────────────────────────────────────── */
+@layer utilities {
+
+    /* Fade-up animation — applied to result cards on arrival */
+    .fade-up {
+        animation: fadeUp 0.35s ease forwards;
+    }
+
+    @keyframes fadeUp {
+        from { opacity: 0; transform: translateY(12px); }
+        to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Spinner */
+    .spinner {
+        animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+        to { transform: rotate(360deg); }
+    }
+}
+
+/* ── Dialogflow CX Messenger dark theme ────────────────────────────────────── */
+df-messenger {
+    z-index: 999;
+    position: fixed;
+    bottom: 16px;
+    right: 16px;
+    --df-messenger-font-color: #f9fafb;
+    --df-messenger-font-family: 'Inter', Google Sans, sans-serif;
+    --df-messenger-chat-background: #111827;
+    --df-messenger-message-user-background: #4c1d95;
+    --df-messenger-message-bot-background: #1f2937;
+    --df-messenger-button-titlebar-color: #7c3aed;
+    --df-messenger-send-icon: #a78bfa;
+}
