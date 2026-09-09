@@ -29,6 +29,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
@@ -1021,7 +1022,10 @@ async def approve_asset_clearance(payload: ApproveRequest) -> JSONResponse:
         ),
     })
 
-
+app.mount("/assets", StaticFiles(directory="../frontend"), name="frontend-assets")
+@app.get("/ui")
+def serve_ui():
+    return FileResponse(os.path.join("frontend", "index.html"))
 # ---------------------------------------------------------------------------
 # Static files — MUST be mounted last so /api/... routes are never shadowed.
 # Serves frontend/index.html at http://localhost:8080/ui

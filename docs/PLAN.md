@@ -82,6 +82,16 @@ An enterprise media perception agent built with Gemini Enterprise and IBM Bob to
   2. Gemini invoking the IBM Bob Cloud Run webhook via `audio_url`.
   3. Real-time acoustic fingerprinting via AudD and instant breakdown of Sync/Master license costs ($30,000 USD).
 
+#### Video Submission
+
+The Dual-Payment Hurdle: Independent filmmakers must independently negotiate and pay two separate sets of rights holders for every piece of copyrighted music used—paying both a synchronization license to the songwriter/publisher and a master use license to the recording artist/label, effectively doubling the music cost per track.
+
+The Micro-Budget Squeeze: For low-budget independent films with budgets ranging from $50,000 to $500,000, licensing fees for a single established track typically range from $500 to $5,000 per side, which can quickly consume a massive chunk of a restricted production budget.
+
+The Macro Imbalance: The global music copyright market reached $45.5 billion, making the music copyright industry roughly 38% larger than the entire global movie box office industry ($33.2 billion), underscoring how heavily protected and economically walled-off audio assets are relative to indie film revenues.
+
+The Chain of Title Bottleneck: A failure to secure proper clearance for even a few seconds of background audio can result in failed E&O (Errors and Omissions) insurance underwriting, disqualification from major film festivals, or catastrophic post-distribution copyright infringement lawsuits.
+
 - **Step 11: Final Devpost Submission**
 
   Submit to the IBM Track before the deadline with the GitHub link, description, and public video URL.
