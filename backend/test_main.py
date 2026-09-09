@@ -255,9 +255,14 @@ class TestSuccessfulClearance:
 
     def test_audio_contract_draft_mentions_track(self):
         import base64
+        from io import BytesIO
+        from pypdf import PdfReader
 
         draft = self._post().json()["contract_draft"]
-        contract_text = base64.b64decode(draft["data_base64"]).decode("utf-8")
+        contract_text = "\n".join(
+            page.extract_text() or ""
+            for page in PdfReader(BytesIO(base64.b64decode(draft["data_base64"]))).pages
+        )
         assert "AUDIO CLEARANCE AGREEMENT" in contract_text
         assert "Blinding Lights" in contract_text
 
