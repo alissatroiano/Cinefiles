@@ -1,25 +1,11 @@
-"""
-Cinefiles – Audio Copyright Clearance Microservice
-
-Endpoints
----------
-POST /api/v1/clearance/audio          – AudD audio fingerprint + royalty-free-aware fee estimate
-POST /api/v1/clearance/audio/direct   – Fee estimate by song title + artist + timestamps (no fingerprint)
-POST /api/v1/clearance/audio/upload   – Multipart audio file upload + fingerprint + fee estimate
-POST /api/v1/clearance/asset          – Mock copyright DB lookup + PDF draft + human-approval gate
-POST /api/v1/clearance/approve        – Finalise a pending asset clearance after human review
-
-Audio fingerprinting is performed by the AudD API (https://api.audd.io/).
-The AudD API token must be set in the AUDD_API_TOKEN environment variable.
-
-The frontend (frontend/index.html) is served at http://localhost:8080/ui
-"""
+"""Cinefiles audio copyright clearance service."""
 
 from __future__ import annotations
 
 import base64
+import io
 import os
-import textwrap
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
@@ -28,322 +14,87 @@ import requests as http_client
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import inch
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
-load_dotenv()  # Loads variables from backend/.env
+load_dotenv()
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-SYNC_LICENSE_BASE_FEE: float = 15_000.00    # USD – Synchronisation right
-MASTER_LICENSE_BASE_FEE: float = 15_000.00  # USD – Master recording right
-
+SYNC_LICENSE_BASE_FEE = 15_000.00
+MASTER_LICENSE_BASE_FEE = 15_000.00
 AUDD_API_URL = "https://api.audd.io/"
-
 API_VERSION = "1.0.0"
 SERVICE_NAME = "Cinefiles Audio Copyright Clearance Service"
 
-# ---------------------------------------------------------------------------
-# Mock copyright database
-# Keyed by normalised lower-case asset_name substring for fuzzy matching.
-# ---------------------------------------------------------------------------
+CONTRACT_TEMPLATES = {
+    "audio": """AUDIO CLEARANCE AGREEMENT - DRAFT
+=================================
+Date:           {date}
+Clearance ID:   {clearance_id}
+Production:     {production_title}
+Track:          {song_title}
+Artist:         {artist}
+Source URL:     {audio_url}
+Clip window:    {timestamp_start} - {timestamp_end}
 
-MOCK_COPYRIGHT_DB: dict[str, dict[str, Any]] = {
-    "nike": {
-        "asset_name": "Nike Swoosh Logo",
-        "rights_holder": "Nike, Inc.",
-        "registration_id": "TM-US-1977-0823",
-        "asset_type": "trademark",
-        "risk_level": "high",
-        "clearance_contact": "legal@nike.com",
-    },
-    "coca-cola": {
-        "asset_name": "Coca-Cola Script Logo",
-        "rights_holder": "The Coca-Cola Company",
-        "registration_id": "TM-US-1893-0042",
-        "asset_type": "trademark",
-        "risk_level": "high",
-        "clearance_contact": "trademarks@coca-cola.com",
-    },
-    "apple": {
-        "asset_name": "Apple Logo (Bitten Apple)",
-        "rights_holder": "Apple Inc.",
-        "registration_id": "TM-US-1977-1119",
-        "asset_type": "trademark",
-        "risk_level": "high",
-        "clearance_contact": "trademark@apple.com",
-    },
-    "starbucks": {
-        "asset_name": "Starbucks Siren Logo",
-        "rights_holder": "Starbucks Corporation",
-        "registration_id": "TM-US-1987-0305",
-        "asset_type": "trademark",
-        "risk_level": "medium",
-        "clearance_contact": "legal@starbucks.com",
-    },
-    "adidas": {
-        "asset_name": "Adidas Three Stripes",
-        "rights_holder": "adidas AG",
-        "registration_id": "TM-DE-1952-0818",
-        "asset_type": "trademark",
-        "risk_level": "medium",
-        "clearance_contact": "brand.protection@adidas.com",
-    },
+This draft identifies the composition and sound recording for review before
+the production is distributed. Separate synchronisation and master-use
+permissions may be required from the relevant rights holders.
+
+LICENSE ESTIMATES
+{license_lines}
+TOTAL ESTIMATED FEE: ${total_fee:,.0f} USD
+STATUS: ESTIMATE - HUMAN LEGAL REVIEW REQUIRED
+
+Rights holder approval: ______________________    Date: ____________
+"""
 }
-
-# ---------------------------------------------------------------------------
-# Contract templates  (one per risk_level)
-# ---------------------------------------------------------------------------
-
-CONTRACT_TEMPLATES: dict[str, str] = {
-    "high": textwrap.dedent("""\
-        CLEARANCE AGREEMENT — HIGH-RISK ASSET
-        ======================================
-        Date:           {date}
-        Clearance ID:   {clearance_id}
-        Production:     {production_title}
-        Asset:          {asset_name}
-        Timestamp:      {timestamp}
-        Rights Holder:  {rights_holder}
-        Contact:        {clearance_contact}
-
-        This agreement constitutes a formal request for synchronisation clearance
-        of the above-identified asset as it appears incidentally in the production
-        footage at the stated timestamp.
-
-        HIGH-RISK NOTICE: This asset is a registered trademark of {rights_holder}.
-        Commercial distribution requires written clearance from the rights holder
-        prior to release. Failure to obtain clearance may result in statutory
-        damages of up to $150,000 per wilful infringement under 17 U.S.C. § 504.
-
-        ESTIMATED CLEARANCE FEE: ${estimated_fee:,.0f} USD
-        STATUS: PENDING HUMAN APPROVAL
-
-        Approved by: ______________________    Date: ____________
-    """),
-    "medium": textwrap.dedent("""\
-        CLEARANCE AGREEMENT — STANDARD ASSET
-        ======================================
-        Date:           {date}
-        Clearance ID:   {clearance_id}
-        Production:     {production_title}
-        Asset:          {asset_name}
-        Timestamp:      {timestamp}
-        Rights Holder:  {rights_holder}
-        Contact:        {clearance_contact}
-
-        This agreement constitutes a standard clearance request for the above asset.
-        A written licence from {rights_holder} is required for commercial release.
-
-        ESTIMATED CLEARANCE FEE: ${estimated_fee:,.0f} USD
-        STATUS: PENDING HUMAN APPROVAL
-
-        Approved by: ______________________    Date: ____________
-    """),
-    "low": textwrap.dedent("""\
-        CLEARANCE NOTICE — LOW-RISK ASSET
-        ==================================
-        Date:           {date}
-        Clearance ID:   {clearance_id}
-        Asset:          {asset_name}
-        Timestamp:      {timestamp}
-
-        This asset has been assessed as low-risk. Document and retain this notice
-        for your Errors & Omissions insurance file.
-
-        ESTIMATED CLEARANCE FEE: ${estimated_fee:,.0f} USD
-        STATUS: PENDING HUMAN APPROVAL
-    """),
-}
-
-# ---------------------------------------------------------------------------
-# In-memory clearance store  { clearance_id: record }
-# Replace with Cloud Firestore / Cloud SQL in production.
-# ---------------------------------------------------------------------------
-
-_clearance_store: dict[str, dict[str, Any]] = {}
-
-
-# ---------------------------------------------------------------------------
-# Pydantic models — audio clearance
-# ---------------------------------------------------------------------------
 
 
 class ClearanceRequest(BaseModel):
-    """Payload for an audio clearance request.
-
-    Supply exactly one of `audio_url` (a publicly accessible URL) or
-    `file_path` (a server-side absolute or relative path to an audio file).
-    """
-
-    audio_url: Optional[str] = Field(
-        default=None,
-        description="Publicly accessible URL of the audio file to identify.",
-        examples=["https://example.com/clip.mp3"],
-    )
-    file_path: Optional[str] = Field(
-        default=None,
-        description="Server-side file-system path to the audio file to identify.",
-        examples=["/uploads/clip.mp3"],
-    )
+    audio_url: Optional[str] = Field(default=None, examples=["https://example.com/clip.mp3"])
+    file_path: Optional[str] = Field(default=None, examples=["/uploads/clip.mp3"])
 
     @model_validator(mode="after")
     def exactly_one_source(self) -> "ClearanceRequest":
         has_url = bool(self.audio_url and self.audio_url.strip())
         has_path = bool(self.file_path and self.file_path.strip())
         if has_url == has_path:
-            raise ValueError(
-                "Provide exactly one of 'audio_url' or 'file_path', not both or neither."
-            )
+            raise ValueError("Provide exactly one of 'audio_url' or 'file_path'.")
         return self
 
 
 class LicenseFee(BaseModel):
-    """Individual licence fee line-item."""
-
     license_type: Literal["Sync", "Master"]
     description: str
     amount_usd: float
 
 
 class DirectClearanceRequest(BaseModel):
-    """Payload for a direct (metadata-based) audio clearance request.
-
-    Use when the song is already known — no audio fingerprinting is performed.
-    Provide the song title, artist, and the clip's start/end timestamps within
-    the production (in ``HH:MM:SS`` or ``MM:SS`` format).
-    """
-
-    song_title: str = Field(
-        ...,
-        min_length=1,
-        description="Title of the copyrighted song.",
-        examples=["Bohemian Rhapsody"],
-    )
-    artist: str = Field(
-        ...,
-        min_length=1,
-        description="Recording artist or band name.",
-        examples=["Queen"],
-    )
-    timestamp_start: str = Field(
-        ...,
-        min_length=1,
-        description=(
-            "Timecode where the audio clip begins in the production "
-            "(e.g. '00:01:30' or '01:30')."
-        ),
-        examples=["00:01:30"],
-    )
-    timestamp_end: str = Field(
-        ...,
-        min_length=1,
-        description=(
-            "Timecode where the audio clip ends in the production "
-            "(e.g. '00:03:45' or '03:45')."
-        ),
-        examples=["00:03:45"],
-    )
-
-
-# ── Asset clearance models ────────────────────────────────────────────────
-
-
-class AssetClearanceRequest(BaseModel):
-    """Payload for a visual/brand asset clearance request."""
-
-    asset_name: str = Field(
-        ...,
-        min_length=1,
-        description="Name or description of the asset detected in the footage.",
-        examples=["Nike Swoosh Logo"],
-    )
-    timestamp: str = Field(
-        ...,
-        min_length=1,
-        description="Timecode in the footage where the asset appears (e.g. '00:04:32').",
-        examples=["00:04:32"],
-    )
-    production_title: str = Field(
-        default="Untitled Production",
-        description="Title of the film or production for the contract header.",
-        examples=["My Indie Film"],
-    )
+    song_title: str = Field(..., min_length=1, examples=["Bohemian Rhapsody"])
+    artist: str = Field(..., min_length=1, examples=["Queen"])
+    timestamp_start: str = Field(..., min_length=1, examples=["00:01:30"])
+    timestamp_end: str = Field(..., min_length=1, examples=["00:03:45"])
 
 
 class PdfDraftPayload(BaseModel):
-    """Base-64 encoded PDF contract draft."""
-
     filename: str
     content_type: Literal["application/pdf"]
     data_base64: str
     page_count: int
 
 
-class AssetClearanceResponse(BaseModel):
-    """Response returned immediately after submitting an asset clearance request."""
-
-    clearance_id: str
-    status: Literal["pending_human_approval"]
-    asset_name: str
-    matched_record: Optional[dict] = None
-    risk_level: str
-    estimated_fee_usd: float
-    contract_template_used: str
-    pdf_draft: PdfDraftPayload
-    submitted_at: str
-    message: str
-
-
-class ApproveRequest(BaseModel):
-    """Payload for the human-approval endpoint."""
-
-    clearance_id: str = Field(
-        ...,
-        description="The clearance_id returned by POST /api/v1/clearance/asset.",
-        examples=["clr_a1b2c3d4"],
-    )
-    approver_name: str = Field(
-        ...,
-        min_length=1,
-        description="Full name of the human approver.",
-        examples=["Jane Smith"],
-    )
-    approver_notes: Optional[str] = Field(
-        default=None,
-        description="Optional notes or conditions attached to the approval.",
-        examples=["Cleared for festival distribution only."],
-    )
-
-
-class ApproveResponse(BaseModel):
-    """Response returned after a clearance is finalised."""
-
-    clearance_id: str
-    status: Literal["approved"]
-    asset_name: str
-    approver_name: str
-    approver_notes: Optional[str]
-    approved_at: str
-    pdf_final: PdfDraftPayload
-    message: str
-
-
 class AuddMatch(BaseModel):
-    """Subset of AudD match data surfaced in the response."""
-
     title: str
     artist: str
     apple_music_link: Optional[str] = None
 
 
 class ClearanceResponse(BaseModel):
-    """Full clearance response payload."""
-
     status: Literal["approved", "pending", "denied"]
     royalty_free: bool
     match: AuddMatch
@@ -353,111 +104,38 @@ class ClearanceResponse(BaseModel):
     requested_at: str
     service: str
     version: str
+    contract_draft: PdfDraftPayload
 
 
-# ---------------------------------------------------------------------------
-# Pydantic models — asset clearance
-# ---------------------------------------------------------------------------
+class ScriptUrlCandidate(BaseModel):
+    url: str
+    line_number: int
+    context: str
+    likely_audio: bool
+    media_hint: Literal["audio", "video", "unknown"]
 
 
-class AssetClearanceRequest(BaseModel):
-    """Payload for a visual/brand asset clearance request."""
-
-    asset_name: str = Field(
-        ...,
-        min_length=1,
-        description="Name or description of the asset detected in the footage.",
-        examples=["Nike Swoosh Logo"],
-    )
-    timestamp: str = Field(
-        ...,
-        min_length=1,
-        description="Timecode in the footage where the asset appears (e.g. '00:04:32').",
-        examples=["00:04:32"],
-    )
-    production_title: str = Field(
-        default="Untitled Production",
-        description="Title of the film or production for the contract header.",
-        examples=["My Indie Film"],
-    )
-
-
-class PdfDraftPayload(BaseModel):
-    """Base-64 encoded PDF contract draft."""
-
+class ScriptScanResponse(BaseModel):
     filename: str
-    content_type: Literal["application/pdf"]
-    data_base64: str
-    page_count: int
-
-
-class AssetClearanceResponse(BaseModel):
-    """Response returned immediately after submitting an asset clearance request."""
-
-    clearance_id: str
-    status: Literal["pending_human_approval"]
-    asset_name: str
-    matched_record: Optional[dict] = None
-    risk_level: str
-    estimated_fee_usd: float
-    contract_template_used: str
-    pdf_draft: PdfDraftPayload
-    submitted_at: str
+    candidate_count: int
+    candidates: list[ScriptUrlCandidate]
     message: str
 
-
-class ApproveRequest(BaseModel):
-    """Payload for the human-approval endpoint."""
-
-    clearance_id: str = Field(
-        ...,
-        description="The clearance_id returned by POST /api/v1/clearance/asset.",
-        examples=["clr_a1b2c3d4"],
-    )
-    approver_name: str = Field(
-        ...,
-        min_length=1,
-        description="Full name of the human approver.",
-        examples=["Jane Smith"],
-    )
-    approver_notes: Optional[str] = Field(
-        default=None,
-        description="Optional notes or conditions attached to the approval.",
-        examples=["Cleared for festival distribution only."],
-    )
-
-
-class ApproveResponse(BaseModel):
-    """Response returned after a clearance is finalised."""
-
-    clearance_id: str
-    status: Literal["approved"]
-    asset_name: str
-    approver_name: str
-    approver_notes: Optional[str]
-    approved_at: str
-    pdf_final: PdfDraftPayload
-    message: str
-
-
-# ---------------------------------------------------------------------------
-# App
-# ---------------------------------------------------------------------------
+class AudioMetadata(BaseModel):
+    track_title: str
+    artist: str
+    film_budget: float
 
 app = FastAPI(
     title=SERVICE_NAME,
     version=API_VERSION,
     description=(
-        "Microservice that (1) fingerprints audio clips via the AudD API to "
-        "estimate Sync & Master licensing fees, and (2) searches a copyright "
-        "database for visual/brand assets, generates a draft clearance PDF, and "
-        "enforces a human-in-the-loop approval gate before finalising the clearance."
+        "Audio copyright clearance using AudD fingerprinting, Sync and Master "
+        "fee estimates, audio clearance drafts, and plain-text script URL scanning."
     ),
-    contact={"name": "Cinefiles", "url": "https://github.com/Cinefiles"},
+    contact={"name": "Cinefiles", "url": "https://github.com/alissatroiano/Cinefiles"},
     license_info={"name": "MIT"},
 )
-
-# CORS — lets the frontend call the API from any origin (local dev + Cloud Run).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -466,573 +144,275 @@ app.add_middleware(
 )
 
 
-# ---------------------------------------------------------------------------
-# Helpers — audio clearance
-# ---------------------------------------------------------------------------
-
-
 def _get_audd_token() -> str:
     token = os.environ.get("AUDD_API_TOKEN", "").strip()
     if not token:
-        raise HTTPException(
-            status_code=500,
-            detail="Server configuration error: AUDD_API_TOKEN is not set.",
-        )
+        raise HTTPException(status_code=500, detail="Server configuration error: AUDD_API_TOKEN is not set.")
     return token
 
 
 def _query_audd(audio_url: Optional[str], file_path: Optional[str], token: str) -> dict:
-    """Call the AudD recognition API and return the raw JSON response dict."""
     data = {"api_token": token, "return": "apple_music"}
     try:
         if audio_url:
             data["url"] = audio_url
-            resp = http_client.post(AUDD_API_URL, data=data, timeout=30)
+            response = http_client.post(AUDD_API_URL, data=data, timeout=30)
         else:
             with open(file_path, "rb") as audio_file:  # type: ignore[arg-type]
-                resp = http_client.post(
-                    AUDD_API_URL, data=data, files={"file": audio_file}, timeout=30
-                )
+                response = http_client.post(AUDD_API_URL, data=data, files={"file": audio_file}, timeout=30)
     except FileNotFoundError:
         raise HTTPException(status_code=400, detail=f"File not found: {file_path}")
     except http_client.exceptions.Timeout:
         raise HTTPException(status_code=504, detail="AudD API request timed out.")
     except http_client.exceptions.RequestException as exc:
         raise HTTPException(status_code=502, detail=f"AudD API unreachable: {exc}")
-
-    if resp.status_code != 200:
-        raise HTTPException(
-            status_code=502, detail=f"AudD API returned HTTP {resp.status_code}."
-        )
-    return resp.json()
+    if response.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"AudD API returned HTTP {response.status_code}.")
+    return response.json()
 
 
-# ---------------------------------------------------------------------------
-# Royalty-free detection
-# ---------------------------------------------------------------------------
-
-#: Keywords that, if found in artist or title strings, indicate a royalty-free
-#: or Creative Commons track.  All comparisons are lower-case.
-_ROYALTY_FREE_KEYWORDS: frozenset[str] = frozenset({
-    "royalty free", "royalty-free", "royaltyfree",
-    "creative commons", "cc by", "cc0", "public domain",
-    "no copyright", "copyright free", "free music",
-    "stock music", "background music free",
-    "pixabay", "freesound", "incompetech", "bensound",
+_ROYALTY_FREE_KEYWORDS = frozenset({
+    "royalty free", "royalty-free", "royaltyfree", "creative commons", "cc by", "cc0",
+    "public domain", "no copyright", "copyright free", "free music", "stock music",
+    "background music free", "pixabay", "freesound", "incompetech", "bensound",
     "audionautix", "ccmixter", "musopen",
 })
-
-#: AudD label / distributor strings that commonly carry RF/stock catalogues.
-_ROYALTY_FREE_LABELS: frozenset[str] = frozenset({
-    "epidemic sound", "artlist", "musicbed", "premiumbeat",
-    "pond5", "audiojungle", "envato", "motionarray",
-    "soundsnap", "jamendo",
+_ROYALTY_FREE_LABELS = frozenset({
+    "epidemic sound", "artlist", "musicbed", "premiumbeat", "pond5", "audiojungle",
+    "envato", "motionarray", "soundsnap", "jamendo",
+})
+_ROYALTY_FREE_URL_MARKERS = frozenset({
+    "royalty-free", "royaltyfree", "freemusic", "free-music",
+    "public-domain", "publicdomain", "creative-commons", "creativecommons",
 })
 
 
 def _is_royalty_free(title: str, artist: str, audd_raw: Optional[dict] = None) -> bool:
-    """Return True if the track appears to be royalty-free or Creative Commons.
-
-    Checks (in order):
-    1. Artist name contains a known royalty-free keyword.
-    2. Track title contains a known royalty-free keyword.
-    3. AudD ``result`` object: label / distributor field (if present) matches
-       a known RF catalogue name.
-    4. AudD ``result`` object: ``timecode`` / ``score`` absent or very low
-       (< 50) — indicates a low-confidence match typical of stock beds.
-    """
-    haystack_artist = artist.lower()
-    haystack_title = title.lower()
-
-    for kw in _ROYALTY_FREE_KEYWORDS:
-        if kw in haystack_artist or kw in haystack_title:
-            return True
-
+    if any(keyword in title.lower() or keyword in artist.lower() for keyword in _ROYALTY_FREE_KEYWORDS):
+        return True
     if audd_raw:
         result = audd_raw.get("result") or {}
-        # Label / distributor check
         label = (result.get("label") or result.get("distributor") or "").lower()
-        for rf_label in _ROYALTY_FREE_LABELS:
-            if rf_label in label:
-                return True
-        # Low confidence score (AudD returns 0–100 in some plans)
+        if any(label_name in label for label_name in _ROYALTY_FREE_LABELS):
+            return True
         score = result.get("score")
         if score is not None and int(score) < 50:
             return True
-
     return False
 
 
+def _is_royalty_free_url(audio_url: str) -> bool:
+    """Recognize explicit royalty-free/public-domain markers in a source URL."""
+    normalized_url = audio_url.lower().replace("_", "-")
+    return any(marker in normalized_url for marker in _ROYALTY_FREE_URL_MARKERS)
+
+
 def _build_audio_licenses(royalty_free: bool) -> list[dict]:
-    """Return the licence fee line-items for an audio clearance response."""
     if royalty_free:
-        rf_note = "Royalty-Free / Creative Commons track – no commercial sync fee required."
+        note = "Royalty-Free / Creative Commons track - no commercial sync fee required."
         return [
-            {"license_type": "Sync",   "description": rf_note, "amount_usd": 0.0},
-            {"license_type": "Master", "description": rf_note, "amount_usd": 0.0},
+            {"license_type": "Sync", "description": note, "amount_usd": 0.0},
+            {"license_type": "Master", "description": note, "amount_usd": 0.0},
         ]
     return [
-        {
-            "license_type": "Sync",
-            "description": (
-                "Synchronisation licence – grants the right to pair the "
-                "musical composition with visual media."
-            ),
-            "amount_usd": SYNC_LICENSE_BASE_FEE,
-        },
-        {
-            "license_type": "Master",
-            "description": (
-                "Master recording licence – grants the right to use the "
-                "specific sound recording owned by the record label."
-            ),
-            "amount_usd": MASTER_LICENSE_BASE_FEE,
-        },
+        {"license_type": "Sync", "description": "Synchronisation licence for pairing the composition with visual media.", "amount_usd": SYNC_LICENSE_BASE_FEE},
+        {"license_type": "Master", "description": "Master recording licence for use of the specific sound recording.", "amount_usd": MASTER_LICENSE_BASE_FEE},
     ]
 
 
 def _extract_match(audd_response: dict) -> AuddMatch:
-    """Parse the AudD JSON and extract title, artist, and Apple Music link."""
     if audd_response.get("status") != "success":
-        raise HTTPException(
-            status_code=502,
-            detail=f"AudD API error: {audd_response.get('error', {}).get('error_message', 'unknown')}",
-        )
+        raise HTTPException(status_code=502, detail=f"AudD API error: {audd_response.get('error', {}).get('error_message', 'unknown')}")
     result = audd_response.get("result")
     if not result:
-        raise HTTPException(
-            status_code=404,
-            detail="No matching track found for the provided audio.",
-        )
-    apple_music_data = result.get("apple_music") or {}
-    return AuddMatch(
-        title=result.get("title", "Unknown Title"),
-        artist=result.get("artist", "Unknown Artist"),
-        apple_music_link=apple_music_data.get("url") or None,
-    )
+        raise HTTPException(status_code=404, detail="No matching track found for the provided audio.")
+    apple_music = result.get("apple_music") or {}
+    return AuddMatch(title=result.get("title", "Unknown Title"), artist=result.get("artist", "Unknown Artist"), apple_music_link=apple_music.get("url") or None)
 
 
-# ---------------------------------------------------------------------------
-# Helpers — asset clearance
-# ---------------------------------------------------------------------------
-
-
-def _search_copyright_db(asset_name: str) -> Optional[dict]:
-    needle = asset_name.lower()
-    for key, record in MOCK_COPYRIGHT_DB.items():
-        if key in needle or needle in key:
-            return record
-    return None
-
-
-def _estimate_fee(risk_level: str) -> float:
-    return {"high": 25_000.0, "medium": 10_000.0, "low": 2_500.0}.get(risk_level, 5_000.0)
-
-
-def _build_contract_text(
-    template_key: str,
-    clearance_id: str,
-    asset_name: str,
-    timestamp: str,
-    production_title: str,
-    rights_holder: str,
-    clearance_contact: str,
-    estimated_fee: float,
-    approved_by: Optional[str] = None,
-    approved_at: Optional[str] = None,
-) -> str:
-    template = CONTRACT_TEMPLATES.get(template_key, CONTRACT_TEMPLATES["low"])
-    text = template.format(
+def _build_audio_contract_text(clearance_id: str, song_title: str, artist: str, audio_url: str, timestamp_start: str, timestamp_end: str, licenses: list[dict], total_fee: float) -> str:
+    license_lines = "\n".join(f"        {item['license_type']}: ${item['amount_usd']:,.0f} USD" for item in licenses)
+    return CONTRACT_TEMPLATES["audio"].format(
         date=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
         clearance_id=clearance_id,
-        production_title=production_title,
-        asset_name=asset_name,
-        timestamp=timestamp,
-        rights_holder=rights_holder,
-        clearance_contact=clearance_contact,
-        estimated_fee=estimated_fee,
+        production_title="Untitled Production",
+        song_title=song_title,
+        artist=artist,
+        audio_url=audio_url or "Not provided",
+        timestamp_start=timestamp_start or "Not provided",
+        timestamp_end=timestamp_end or "Not provided",
+        license_lines=license_lines,
+        total_fee=total_fee,
     )
-    if approved_by and approved_at:
-        text = text.replace(
-            "Approved by: ______________________    Date: ____________",
-            f"Approved by: {approved_by}    Date: {approved_at}",
-        )
-        text = text.replace("STATUS: PENDING HUMAN APPROVAL", "STATUS: APPROVED")
-    return text
 
 
 def _encode_pdf_payload(contract_text: str, filename: str) -> PdfDraftPayload:
-    """Base64-encode the contract text as an application/pdf payload.
-    Swap this body for ReportLab/WeasyPrint to produce a real binary PDF."""
-    encoded = base64.b64encode(contract_text.encode("utf-8")).decode("ascii")
-    return PdfDraftPayload(
-        filename=filename,
-        content_type="application/pdf",
-        data_base64=encoded,
-        page_count=1,
+    pdf_buffer = io.BytesIO()
+    document = SimpleDocTemplate(
+        pdf_buffer,
+        pagesize=letter,
+        rightMargin=0.65 * inch,
+        leftMargin=0.65 * inch,
+        topMargin=0.6 * inch,
+        bottomMargin=0.6 * inch,
     )
+    styles = getSampleStyleSheet()
+    body_style = styles["BodyText"]
+    body_style.fontName = "Helvetica"
+    body_style.fontSize = 9
+    body_style.leading = 12
+    story = []
+    for block in contract_text.split("\n\n"):
+        story.append(Paragraph(block.replace("\n", "<br/>").replace("&", "&amp;"), body_style))
+        story.append(Spacer(1, 8))
+    document.build(story)
+    encoded = base64.b64encode(pdf_buffer.getvalue()).decode("ascii")
+    return PdfDraftPayload(filename=filename, content_type="application/pdf", data_base64=encoded, page_count=1)
 
 
-# ---------------------------------------------------------------------------
-# Endpoints — audio clearance
-# ---------------------------------------------------------------------------
-
-
-@app.post(
-    "/api/v1/clearance/audio",
-    response_model=ClearanceResponse,
-    summary="Request audio copyright clearance",
-    description=(
-        "Accepts a raw audio URL or server-side file path, fingerprints the clip "
-        "via the AudD API, extracts the matched artist, title, and Apple Music "
-        "link, calculates estimated Sync and Master recording licensing fees, "
-        "and returns a structured clearance response."
-    ),
-    tags=["Clearance"],
-    responses={
-        200: {"description": "Clearance estimate successfully generated."},
-        400: {"description": "Bad request – invalid file path or audio source."},
-        404: {"description": "No matching track found for the provided audio."},
-        422: {"description": "Validation error – invalid request payload."},
-        502: {"description": "AudD API error or unreachable."},
-        504: {"description": "AudD API request timed out."},
-    },
-)
-async def request_audio_clearance(payload: ClearanceRequest) -> JSONResponse:  # noqa: F811
-    token = _get_audd_token()
-    audd_response = _query_audd(payload.audio_url, payload.file_path, token)
-    match = _extract_match(audd_response)
-
-    rf = _is_royalty_free(match.title, match.artist, audd_response)
-    licenses = _build_audio_licenses(rf)
-    total_fee = sum(lic["amount_usd"] for lic in licenses)
-
-    return JSONResponse(status_code=200, content={
-        "status": "approved",
-        "royalty_free": rf,
-        "match": {
-            "title": match.title,
-            "artist": match.artist,
-            "apple_music_link": match.apple_music_link,
-        },
-        "licenses": licenses,
-        "total_fee_usd": total_fee,
-        "currency": "USD",
-        "requested_at": datetime.now(timezone.utc).isoformat(),
-        "service": SERVICE_NAME,
-        "version": API_VERSION,
-    })
-
-
-# ---------------------------------------------------------------------------
-# Endpoint — direct (metadata-based) audio clearance
-# ---------------------------------------------------------------------------
-
-
-@app.post(
-    "/api/v1/clearance/audio/direct",
-    response_model=ClearanceResponse,
-    summary="Request audio clearance by song title and artist",
-    description=(
-        "Accepts song_title, artist, timestamp_start, and timestamp_end directly — "
-        "no audio fingerprinting is performed. Applies the same royalty-free "
-        "detection logic as the fingerprint endpoint: if the artist or title "
-        "contains royalty-free/Creative Commons keywords the fees are $0; "
-        "otherwise Sync and Master fees of $15,000 each apply."
-    ),
-    tags=["Clearance"],
-    responses={
-        200: {"description": "Clearance estimate successfully generated."},
-        422: {"description": "Validation error – invalid request payload."},
-    },
-)
-async def direct_audio_clearance(payload: DirectClearanceRequest) -> JSONResponse:
-    rf = _is_royalty_free(payload.song_title, payload.artist)
-    licenses = _build_audio_licenses(rf)
-    total_fee = sum(lic["amount_usd"] for lic in licenses)
-
-    return JSONResponse(status_code=200, content={
-        "status": "approved",
-        "royalty_free": rf,
-        "match": {
-            "title": payload.song_title,
-            "artist": payload.artist,
-            "apple_music_link": None,
-        },
-        "licenses": licenses,
-        "total_fee_usd": total_fee,
-        "currency": "USD",
-        "timestamp_start": payload.timestamp_start,
-        "timestamp_end": payload.timestamp_end,
-        "requested_at": datetime.now(timezone.utc).isoformat(),
-        "service": SERVICE_NAME,
-        "version": API_VERSION,
-    })
-
-
-# ---------------------------------------------------------------------------
-# Endpoint — audio file upload (multipart/form-data)
-# ---------------------------------------------------------------------------
-
-ALLOWED_AUDIO_TYPES = {
-    "audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav",
-    "audio/aac", "audio/ogg", "audio/flac", "audio/mp4",
-    "audio/x-m4a", "video/mp4",
-}
-MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB
-
-
-@app.post(
-    "/api/v1/clearance/audio/upload",
-    response_model=ClearanceResponse,
-    summary="Upload an audio file for copyright clearance",
-    description=(
-        "Accepts a multipart/form-data audio file upload (MP3, WAV, AAC, OGG, FLAC — "
-        "max 25 MB), fingerprints it via the AudD API, applies royalty-free detection, "
-        "and returns the same structured clearance response as the URL-based endpoint."
-    ),
-    tags=["Clearance"],
-    responses={
-        200: {"description": "Clearance estimate successfully generated."},
-        400: {"description": "Invalid or unsupported file type / file too large."},
-        422: {"description": "Validation error – missing file field."},
-        502: {"description": "AudD API error or unreachable."},
-        504: {"description": "AudD API request timed out."},
-    },
-)
-async def upload_audio_clearance(
-    audio_file: UploadFile = File(..., description="Audio file to fingerprint (MP3, WAV, AAC, OGG, FLAC — max 25 MB)"),
-) -> JSONResponse:
-    import tempfile
-    content_type = (audio_file.content_type or "").lower().split(";")[0].strip()
-    if content_type not in ALLOWED_AUDIO_TYPES:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Unsupported file type '{content_type}'. "
-                "Accepted: MP3, WAV, AAC, OGG, FLAC, M4A."
-            ),
-        )
-
-    data = await audio_file.read()
-    if len(data) > MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File too large ({len(data) // (1024*1024)} MB). Maximum is 25 MB.",
-        )
-
-    token = _get_audd_token()
-
-    suffix = os.path.splitext(audio_file.filename or "clip.mp3")[1] or ".mp3"
-    try:
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(data)
-            tmp_path = tmp.name
-        audd_response = _query_audd(audio_url=None, file_path=tmp_path, token=token)
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-
-    match = _extract_match(audd_response)
-    rf = _is_royalty_free(match.title, match.artist, audd_response)
-    licenses = _build_audio_licenses(rf)
-    total_fee = sum(lic["amount_usd"] for lic in licenses)
-
-    return JSONResponse(status_code=200, content={
-        "status": "approved",
-        "royalty_free": rf,
-        "match": {
-            "title": match.title,
-            "artist": match.artist,
-            "apple_music_link": match.apple_music_link,
-        },
-        "licenses": licenses,
-        "total_fee_usd": total_fee,
-        "currency": "USD",
-        "requested_at": datetime.now(timezone.utc).isoformat(),
-        "service": SERVICE_NAME,
-        "version": API_VERSION,
-    })
-
-
-# ---------------------------------------------------------------------------
-# Endpoints — asset clearance (submit)
-# ---------------------------------------------------------------------------
-
-
-@app.post(
-    "/api/v1/clearance/asset",
-    response_model=AssetClearanceResponse,
-    summary="Submit a visual/brand asset for copyright clearance",
-    description=(
-        "Accepts an asset name and footage timestamp, searches a mock copyright "
-        "database, matches the appropriate contract template, calculates an "
-        "estimated clearance fee, generates a draft PDF contract, and places the "
-        "clearance in 'pending_human_approval' status until /approve is called."
-    ),
-    tags=["Asset Clearance"],
-    responses={
-        200: {"description": "Asset clearance draft created — pending human approval."},
-        422: {"description": "Validation error – invalid request payload."},
-    },
-)
-async def submit_asset_clearance(payload: AssetClearanceRequest) -> JSONResponse:
-    clearance_id = f"clr_{uuid.uuid4().hex[:12]}"
-    now = datetime.now(timezone.utc).isoformat()
-
-    matched = _search_copyright_db(payload.asset_name)
-    if matched:
-        risk_level = matched["risk_level"]
-        rights_holder = matched["rights_holder"]
-        clearance_contact = matched["clearance_contact"]
-        canonical_name = matched["asset_name"]
-    else:
-        risk_level = "medium"
-        rights_holder = "Unknown Rights Holder"
-        clearance_contact = "clearance@example.com"
-        canonical_name = payload.asset_name
-
-    template_key = risk_level if risk_level in CONTRACT_TEMPLATES else "low"
-    estimated_fee = _estimate_fee(risk_level)
-
-    contract_text = _build_contract_text(
-        template_key=template_key,
-        clearance_id=clearance_id,
-        asset_name=canonical_name,
-        timestamp=payload.timestamp,
-        production_title=payload.production_title,
-        rights_holder=rights_holder,
-        clearance_contact=clearance_contact,
-        estimated_fee=estimated_fee,
+def _audio_response(match: AuddMatch, licenses: list[dict], total_fee: float, audio_url: str = "", timestamp_start: str = "", timestamp_end: str = "") -> dict[str, Any]:
+    draft = _encode_pdf_payload(
+        _build_audio_contract_text(f"aud_{uuid.uuid4().hex[:12]}", match.title, match.artist, audio_url, timestamp_start, timestamp_end, licenses, total_fee),
+        "audio_clearance_draft.pdf",
     )
-    pdf_payload = _encode_pdf_payload(contract_text, filename=f"{clearance_id}_draft.pdf")
-
-    _clearance_store[clearance_id] = {
-        "clearance_id": clearance_id,
-        "status": "pending_human_approval",
-        "asset_name": canonical_name,
-        "raw_asset_name": payload.asset_name,
-        "timestamp": payload.timestamp,
-        "production_title": payload.production_title,
-        "matched_record": matched,
-        "risk_level": risk_level,
-        "rights_holder": rights_holder,
-        "clearance_contact": clearance_contact,
-        "estimated_fee_usd": estimated_fee,
-        "contract_template_used": template_key,
-        "contract_text": contract_text,
-        "pdf_draft": pdf_payload.model_dump(),
-        "submitted_at": now,
+    return {
+        "status": "approved", "royalty_free": total_fee == 0, "match": match.model_dump(),
+        "licenses": licenses, "total_fee_usd": total_fee, "currency": "USD",
+        "requested_at": datetime.now(timezone.utc).isoformat(), "service": SERVICE_NAME,
+        "version": API_VERSION, "contract_draft": draft.model_dump(),
     }
 
-    return JSONResponse(status_code=200, content={
-        "clearance_id": clearance_id,
-        "status": "pending_human_approval",
-        "asset_name": canonical_name,
-        "matched_record": matched,
-        "risk_level": risk_level,
-        "estimated_fee_usd": estimated_fee,
-        "contract_template_used": template_key,
-        "pdf_draft": pdf_payload.model_dump(),
-        "submitted_at": now,
-        "message": (
-            f"Clearance draft created for '{canonical_name}'. "
-            "Review the PDF contract and call POST /api/v1/clearance/approve "
-            f"with clearance_id='{clearance_id}' to finalise."
-        ),
-    })
 
-
-# ---------------------------------------------------------------------------
-# Endpoints — asset clearance (approve)
-# ---------------------------------------------------------------------------
-
-
-@app.post(
-    "/api/v1/clearance/approve",
-    response_model=ApproveResponse,
-    summary="Finalise a pending asset clearance after human review",
-    description=(
-        "Accepts a clearance_id and approver details, transitions the clearance "
-        "from 'pending_human_approval' to 'approved', stamps the PDF contract "
-        "with the approver name and timestamp, and returns the final record."
-    ),
-    tags=["Asset Clearance"],
-    responses={
-        200: {"description": "Clearance approved and finalised."},
-        404: {"description": "Clearance ID not found."},
-        409: {"description": "Clearance is not in pending_human_approval status."},
-        422: {"description": "Validation error – invalid request payload."},
-    },
-)
-async def approve_asset_clearance(payload: ApproveRequest) -> JSONResponse:
-    record = _clearance_store.get(payload.clearance_id)
-    if not record:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Clearance ID '{payload.clearance_id}' not found.",
+@app.post("/api/v1/clearance/audio", response_model=ClearanceResponse, tags=["Clearance"])
+async def request_audio_clearance(payload: ClearanceRequest) -> JSONResponse:
+    if payload.audio_url and _is_royalty_free_url(payload.audio_url):
+        match = AuddMatch(
+            title="Indie Background Track",
+            artist="Public Domain / Royalty-Free Provider",
         )
-    if record["status"] != "pending_human_approval":
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Clearance '{payload.clearance_id}' has status '{record['status']}' "
-                "and cannot be approved again."
-            ),
+        licenses = _build_audio_licenses(royalty_free=True)
+        total_fee = 0.0
+        return JSONResponse(
+            status_code=200,
+            content=_audio_response(match, licenses, total_fee, payload.audio_url),
         )
 
-    approved_at = datetime.now(timezone.utc).isoformat()
-    final_text = _build_contract_text(
-        template_key=record["contract_template_used"],
-        clearance_id=record["clearance_id"],
-        asset_name=record["asset_name"],
-        timestamp=record["timestamp"],
-        production_title=record["production_title"],
-        rights_holder=record["rights_holder"],
-        clearance_contact=record["clearance_contact"],
-        estimated_fee=record["estimated_fee_usd"],
-        approved_by=payload.approver_name,
-        approved_at=approved_at,
-    )
-    pdf_final = _encode_pdf_payload(
-        final_text, filename=f"{record['clearance_id']}_approved.pdf"
-    )
+    audd_response = _query_audd(payload.audio_url, payload.file_path, _get_audd_token())
+    match = _extract_match(audd_response)
+    licenses = _build_audio_licenses(_is_royalty_free(match.title, match.artist, audd_response))
+    total_fee = sum(item["amount_usd"] for item in licenses)
+    return JSONResponse(status_code=200, content=_audio_response(match, licenses, total_fee, payload.audio_url or ""))
 
-    record.update({
-        "status": "approved",
-        "approver_name": payload.approver_name,
-        "approver_notes": payload.approver_notes,
-        "approved_at": approved_at,
-        "pdf_final": pdf_final.model_dump(),
-    })
 
-    return JSONResponse(status_code=200, content={
-        "clearance_id": record["clearance_id"],
-        "status": "approved",
-        "asset_name": record["asset_name"],
-        "approver_name": payload.approver_name,
-        "approver_notes": payload.approver_notes,
-        "approved_at": approved_at,
-        "pdf_final": pdf_final.model_dump(),
-        "message": (
-            f"Clearance for '{record['asset_name']}' has been approved by "
-            f"{payload.approver_name}. The signed PDF contract is attached."
-        ),
-    })
+@app.post("/api/v1/clearance/audio/direct", response_model=ClearanceResponse, tags=["Clearance"])
+async def direct_audio_clearance(payload: DirectClearanceRequest) -> JSONResponse:
+    match = AuddMatch(title=payload.song_title, artist=payload.artist)
+    licenses = _build_audio_licenses(_is_royalty_free(payload.song_title, payload.artist))
+    total_fee = sum(item["amount_usd"] for item in licenses)
+    content = _audio_response(match, licenses, total_fee, "", payload.timestamp_start, payload.timestamp_end)
+    content.update({"timestamp_start": payload.timestamp_start, "timestamp_end": payload.timestamp_end})
+    return JSONResponse(status_code=200, content=content)
 
-app.mount("/assets", StaticFiles(directory="../frontend"), name="frontend-assets")
-@app.get("/ui")
-def serve_ui():
-    return FileResponse(os.path.join("frontend", "index.html"))
-# ---------------------------------------------------------------------------
-# Static files — MUST be mounted last so /api/... routes are never shadowed.
-# Serves frontend/index.html at http://localhost:8080/ui
-# ---------------------------------------------------------------------------
 
-_frontend_dir = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")
-)
-if os.path.isdir(_frontend_dir):
-    app.mount("/ui", StaticFiles(directory=_frontend_dir, html=True), name="frontend")
+ALLOWED_AUDIO_TYPES = {"audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/aac", "audio/ogg", "audio/flac", "audio/mp4", "audio/x-m4a", "video/mp4"}
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
+
+@app.post("/api/v1/clearance/audio/upload", response_model=ClearanceResponse, tags=["Clearance"])
+async def upload_audio_clearance(audio_file: UploadFile = File(...)) -> JSONResponse:
+    content_type = (audio_file.content_type or "").lower().split(";", 1)[0].strip()
+    if content_type not in ALLOWED_AUDIO_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type '{content_type}'. Accepted: MP3, WAV, AAC, OGG, FLAC, M4A.")
+    data = await audio_file.read()
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail="File too large. Maximum is 25 MB.")
+    import tempfile
+    token = _get_audd_token()
+    tmp_path = ""
+    try:
+        suffix = os.path.splitext(audio_file.filename or "clip.mp3")[1] or ".mp3"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temp_file:
+            temp_file.write(data)
+            tmp_path = temp_file.name
+        audd_response = _query_audd(None, tmp_path, token)
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+    match = _extract_match(audd_response)
+    licenses = _build_audio_licenses(_is_royalty_free(match.title, match.artist, audd_response))
+    total_fee = sum(item["amount_usd"] for item in licenses)
+    return JSONResponse(status_code=200, content=_audio_response(match, licenses, total_fee, f"Uploaded file: {audio_file.filename or 'audio clip'}"))
+
+
+@app.post("/api/v1/clearance/approve")
+async def mock_ibm_bob_clearance(payload: AudioMetadata):
+    """
+    Simulates the IBM Bob Audio Clearance response for the hackathon demo.
+    Returns a deterministic compliance summary to complete the agent loop.
+    """
+    # Simple logic to determine tier based on input payload
+    requires_manual_review = payload.film_budget < 10000
+    
+    return {
+        "status": "success",
+        "provider": "IBM_Bob_Audio_Clearance_Tool",
+        "track_title": payload.track_title,
+        "artist": payload.artist,
+        "clearance_status": "Conditional Approval" if requires_manual_review else "Cleared for Production",
+        "chain_of_title_ref": "COT-9842-IBM",
+        "message": "Audio metadata successfully processed and cleared through orchestration pipeline."
+    }
+
+
+SCRIPT_URL_PATTERN = re.compile(r"https?://[^\s<>\"']+")
+SCRIPT_AUDIO_EXTENSIONS = (".mp3", ".wav", ".aac", ".ogg", ".flac", ".m4a")
+SCRIPT_VIDEO_EXTENSIONS = (".mp4", ".mov", ".m4v", ".webm", ".avi")
+SCRIPT_AUDIO_TERMS = ("audio", "music", "song", "track", "soundtrack", "radio", "broadcast", "recording", "listen", "plays", "playing", "heard")
+MAX_SCRIPT_BYTES = 2 * 1024 * 1024
+
+
+def _extract_script_candidates(script_text: str) -> list[dict[str, Any]]:
+    candidates = []
+    seen_urls: set[str] = set()
+    for line_number, line in enumerate(script_text.splitlines(), start=1):
+        context = line.strip()
+        for match in SCRIPT_URL_PATTERN.finditer(line):
+            url = match.group(0).rstrip(".,;:!?)]}")
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            normalized_url = url.lower().split("?", 1)[0]
+            lowered = f"{url} {context}".lower()
+            likely_audio = normalized_url.endswith(SCRIPT_AUDIO_EXTENSIONS) or any(term in lowered for term in SCRIPT_AUDIO_TERMS)
+            media_hint = "audio" if likely_audio else ("video" if normalized_url.endswith(SCRIPT_VIDEO_EXTENSIONS) else "unknown")
+            candidates.append({"url": url, "line_number": line_number, "context": context[:240], "likely_audio": likely_audio, "media_hint": media_hint})
+    return candidates
+
+
+@app.post("/api/v1/scripts/scan", response_model=ScriptScanResponse, tags=["Script Scanning"])
+async def scan_script(script_file: UploadFile = File(...)) -> ScriptScanResponse:
+    filename = script_file.filename or "script.txt"
+    if os.path.splitext(filename)[1].lower() not in {".txt", ".md", ".fountain"}:
+        raise HTTPException(status_code=400, detail="Unsupported script type. Upload a UTF-8 .txt, .md, or .fountain file.")
+    data = await script_file.read()
+    if len(data) > MAX_SCRIPT_BYTES:
+        raise HTTPException(status_code=400, detail="Script is too large. Maximum size is 2 MB.")
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="Script must be UTF-8 encoded plain text.")
+    candidates = _extract_script_candidates(text)
+    return ScriptScanResponse(filename=filename, candidate_count=len(candidates), candidates=candidates, message="Review extracted URLs before sending audio candidates for clearance.")
+
+
+frontend_dir = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend"))
+if os.path.isdir(frontend_dir):
+    app.mount("/ui", StaticFiles(directory=frontend_dir, html=True), name="frontend")
+    app.mount("/assets", StaticFiles(directory=frontend_dir), name="frontend-assets")
+
+    @app.get("/ui")
+    def serve_ui():
+        return FileResponse(os.path.join(frontend_dir, "index.html"))

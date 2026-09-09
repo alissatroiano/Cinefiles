@@ -1,3 +1,2 @@
-#agentChat {
-    right: 0
-}
+/* Dialogflow Messenger is positioned in frontend/index.html so it stays fixed
+   to the viewport instead of participating in the page layout. */

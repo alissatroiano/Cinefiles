@@ -12,6 +12,16 @@ An enterprise media perception agent built with Gemini Enterprise and IBM Bob to
 
 ## 🗓 Step-by-Step Execution Schedule
 
+## What's Next
+
+### Script Render
+
+- Add PDF and DOCX screenplay extraction after the plain-text script URL scanner is stable.
+- Let Gemini Enterprise inspect uploaded scripts and return structured audio candidates with scene context, timestamps, confidence, song title, and artist.
+- Support multiple audio candidates in one clearance report and generate one audio agreement draft per candidate.
+- Replace the current fixed Sync and Master estimates with a transparent model using clip duration, territory, distribution type, audience size, and rights-holder data.
+- Keep visual and brand asset analysis out of the current Cinefiles product scope; this release focuses on audio clearance.
+
 ### Phase 1: IBM Bob Legal Microservice (Days 1–3)
 
 - **Step 1: Backend Generation (IBM Bob IDE)**

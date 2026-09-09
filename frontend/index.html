@@ -81,6 +81,34 @@
         textarea.input-box {
             resize: vertical;
         }
+
+        /* Keep the Dialogflow host out of document flow and within the viewport. */
+        df-messenger {
+            position: fixed;
+            right: 24px;
+            bottom: 24px;
+            z-index: 100;
+            width: auto;
+            height: auto;
+            --df-messenger-font-family: 'Google Sans', 'Inter', sans-serif;
+            --df-messenger-font-color: #111827;
+            --df-messenger-chat-background: #f3f6fc;
+            --df-messenger-message-user-background: #d3e3fd;
+            --df-messenger-message-bot-background: #ffffff;
+            --df-messenger-chat-window-width: min(400px, calc(100vw - 48px));
+            --df-messenger-chat-window-height: min(650px, calc(100vh - 120px));
+            --df-messenger-titlebar-background: #111827;
+            --df-messenger-titlebar-font-color: #ffffff;
+        }
+
+        @media (max-width: 640px) {
+            df-messenger {
+                right: 12px;
+                bottom: 12px;
+                --df-messenger-chat-window-width: calc(100vw - 24px);
+                --df-messenger-chat-window-height: calc(100vh - 96px);
+            }
+        }
     </style>
 
     <!-- Dialogflow CX Messenger -->
@@ -94,7 +122,7 @@
     <header class="border-b border-gray-800 bg-gray-950/80 backdrop-blur sticky top-0 z-40">
         <div class="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
             <div class="flex items-center gap-3">
-                <img src="../public/logo-dark.png" alt="Cinefiles" class="h-8 w-auto" />
+                <img src="assets/lightlogo.png" alt="Cinefiles" class="h-8 w-auto" />
                 <span class="text-sm text-gray-500 tracking-widest uppercase font-medium">Clearance</span>
             </div>
             <span class="text-xs text-gray-600 hidden sm:block">
@@ -113,7 +141,7 @@
                 Audio Copyright <span class="text-brand-light">Clearance</span>
             </h1>
             <p class="text-gray-400 max-w-xl text-sm leading-relaxed">
-                Fingerprint a clip, upload a file, or submit a known track to receive an instant Sync &amp; Master licensing estimate. Use the Asset Clearance tab for brand logo and visual IP workflows.
+                Fingerprint a clip, upload a file, or submit a known track to receive an instant Sync &amp; Master licensing estimate.
             </p>
         </div>
 
@@ -125,7 +153,6 @@
                 <button id="tabUrl" onclick="switchTab('url')" class="px-4 py-1.5 rounded-lg text-sm font-medium transition bg-gray-700 text-white">URL</button>
                 <button id="tabUpload" onclick="switchTab('upload')" class="px-4 py-1.5 rounded-lg text-sm font-medium transition text-gray-400 hover:text-gray-200">File Upload</button>
                 <button id="tabDirect" onclick="switchTab('direct')" class="px-4 py-1.5 rounded-lg text-sm font-medium transition text-gray-400 hover:text-gray-200">Known Track</button>
-                <button id="tabAsset" onclick="switchTab('asset')" class="px-4 py-1.5 rounded-lg text-sm font-medium transition text-gray-400 hover:text-gray-200">Asset Clearance</button>
             </div>
 
             <!-- ── URL panel ── -->
@@ -338,6 +365,9 @@
                         <span class="text-sm font-semibold text-gray-300">Total Estimated Cost</span>
                         <span id="totalFee" class="text-lg font-bold text-white tabular-nums">$0.00</span>
                     </div>
+                    <button id="audioDraftBtn" onclick="downloadAudioDraft()" class="inline-flex items-center justify-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-200 text-sm font-medium rounded-xl transition">
+                        Download Audio Clearance Draft
+                    </button>
                 </div>
 
                 <!-- Disclaimer -->
@@ -379,17 +409,9 @@
                 </p>
             </div>
 
-            <section class="agent-chat">
-                <div class="container">
-                    <section>
-                        <div class="container">
-                            <df-messenger project-id="cinefiles-506801" agent-id="28071113-7926-413b-98fa-f39d1ee53805" language-code="en" max-query-length="-1" location="global">
-                                <df-messenger-chat-bubble chat-title="Cinefiles"></df-messenger-chat-bubble>
-                            </df-messenger>
-                        </div>
-                    </section>
-                </div>
-            </section>
+            <df-messenger project-id="cinefiles-506801" agent-id="28071113-7926-413b-98fa-f39d1ee53805" language-code="en" max-query-length="-1" location="global">
+                <df-messenger-chat-bubble chat-title="Cinefiles"></df-messenger-chat-bubble>
+            </df-messenger>
 
     </main>
 
@@ -404,7 +426,7 @@
     <script>
         // ── API base ─────────────────────────────────────────────────────────
         const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') ?
-            '' :
+            'http://127.0.0.1:8080' :
             'https://cinefiles-backend-543072204876.us-east1.run.app';
 
         // ── State ────────────────────────────────────────────────────────────
@@ -413,6 +435,10 @@
         let _pendingClearanceId = null;
         let _draftPdf = null;
         let _finalPdf = null;
+        let _audioDraft = null;
+
+        document.getElementById('tabAsset')?.remove();
+        document.getElementById('panelAsset')?.remove();
 
         const MAX_MB = 25;
         const ALLOWED_EXTS = ['mp3', 'wav', 'aac', 'ogg', 'flac', 'm4a'];
@@ -420,7 +446,7 @@
         // ── Tab switcher ─────────────────────────────────────────────────────
         function switchTab(tab) {
             _currentTab = tab;
-            const tabs = ['url', 'upload', 'direct', 'asset'];
+            const tabs = ['url', 'upload', 'direct'];
             tabs.forEach(t => {
                 const btn = document.getElementById('tab' + t.charAt(0).toUpperCase() + t.slice(1));
                 const panel = document.getElementById('panel' + t.charAt(0).toUpperCase() + t.slice(1));
@@ -432,9 +458,7 @@
             });
             clearError();
             // Hide audio results when switching away from audio tabs
-            if (tab === 'asset') {
-                document.getElementById('resultsPanel').classList.add('hidden');
-            }
+            document.getElementById('resultsPanel').classList.toggle('hidden', tab === 'asset');
         }
 
         // ── Demo fill ────────────────────────────────────────────────────────
@@ -475,6 +499,7 @@
         // ── Render audio clearance result ────────────────────────────────────
         function renderResult(data) {
             const badge = document.getElementById('statusBadge');
+            _audioDraft = data.contract_draft ?? null;
             const colours = {
                 approved: 'bg-green-900/60 text-green-400',
                 pending: 'bg-yellow-900/60 text-yellow-400',
@@ -491,8 +516,8 @@
                 rfBadge.classList.add('hidden');
             }
 
-            document.getElementById('trackTitle').textContent = data.match ? .title ? ? '—';
-            document.getElementById('artistName').textContent = data.match ? .artist ? ? '—';
+            document.getElementById('trackTitle').textContent = data.match?.title ?? '—';
+            document.getElementById('artistName').textContent = data.match?.artist ?? '—';
 
             // Clip window (only present on /direct responses)
             const cw = document.getElementById('clipWindow');
@@ -503,7 +528,7 @@
                 cw.parentElement.classList.add('hidden');
             }
 
-            const link = data.match ? .apple_music_link;
+            const link = data.match?.apple_music_link;
             const linkEl = document.getElementById('appleMusicLink');
             const noneEl = document.getElementById('appleMusicNone');
             if (link) {
@@ -525,7 +550,7 @@
 
             const rows = document.getElementById('licenseRows');
             rows.innerHTML = '';
-            (data.licenses ? ? []).forEach(lic => {
+            (data.licenses ?? []).forEach(lic => {
                 const amtClass = lic.amount_usd === 0 ? 'text-emerald-400' : 'text-white';
                 rows.insertAdjacentHTML('beforeend', `
                     <div class="flex justify-between items-start gap-4">
@@ -538,7 +563,7 @@
             });
 
             const totalEl = document.getElementById('totalFee');
-            totalEl.textContent = formatUSD(data.total_fee_usd ? ? 0);
+            totalEl.textContent = formatUSD(data.total_fee_usd ?? 0);
             totalEl.className = `text-lg font-bold tabular-nums ${data.royalty_free ? 'text-emerald-400' : 'text-white'}`;
 
             document.getElementById('loadingState').classList.add('hidden');
@@ -549,7 +574,7 @@
 
         function renderApiError(detail, status) {
             document.getElementById('loadingState').classList.add('hidden');
-            const msg = typeof detail === 'string' ? detail : (detail ? .detail ? ? `HTTP ${status} — unexpected error`);
+            const msg = typeof detail === 'string' ? detail : (detail?.detail ?? `HTTP ${status} — unexpected error`);
             document.getElementById('errorMessage').textContent = msg;
             document.getElementById('errorCard').classList.remove('hidden');
         }
@@ -731,7 +756,7 @@
                 });
                 const json = await resp.json();
                 if (!resp.ok) {
-                    showError(json ? .detail ? ? 'Asset submission failed.');
+                    showError(json?.detail ?? 'Asset submission failed.');
                     return;
                 }
 
@@ -784,7 +809,7 @@
                 });
                 const json = await resp.json();
                 if (!resp.ok) {
-                    showError(json ? .detail ? ? 'Approval failed.');
+                    showError(json?.detail ?? 'Approval failed.');
                     btn.disabled = false;
                     return;
                 }
@@ -824,6 +849,24 @@
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        function downloadAudioDraft() {
+            if (!_audioDraft?.data_base64) {
+                showError('No audio clearance draft available.');
+                return;
+            }
+            const binary = atob(_audioDraft.data_base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = _audioDraft.filename;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
             URL.revokeObjectURL(url);
         }
 

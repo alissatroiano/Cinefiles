@@ -21,10 +21,70 @@ os.environ.setdefault("AUDD_API_TOKEN", "test-token")
 
 from main import (  # noqa: E402
     app, _extract_match, _get_audd_token, _is_royalty_free, _build_audio_licenses,
-    AuddMatch, SYNC_LICENSE_BASE_FEE, MASTER_LICENSE_BASE_FEE,
+    _extract_script_candidates, _is_royalty_free_url, AuddMatch,
+    SYNC_LICENSE_BASE_FEE, MASTER_LICENSE_BASE_FEE,
 )
 
 client = TestClient(app, raise_server_exceptions=False)
+
+
+class TestScriptUrlScanning:
+    def test_extracts_unique_audio_url_with_context(self):
+        text = "INT. BAR - NIGHT\nMusic plays: https://example.com/song.mp3\nSame URL: https://example.com/song.mp3"
+
+        candidates = _extract_script_candidates(text)
+
+        assert candidates == [{
+            "url": "https://example.com/song.mp3",
+            "line_number": 2,
+            "context": "Music plays: https://example.com/song.mp3",
+            "likely_audio": True,
+            "media_hint": "audio",
+        }]
+
+    def test_classifies_video_and_unknown_urls(self):
+        candidates = _extract_script_candidates(
+            "Watch https://example.com/scene.mp4\nSee https://example.com/notes"
+        )
+
+        assert candidates[0]["media_hint"] == "video"
+        assert candidates[0]["likely_audio"] is False
+        assert candidates[1]["media_hint"] == "unknown"
+
+    def test_strips_sentence_punctuation(self):
+        candidates = _extract_script_candidates("Audio: https://example.com/clip.wav.")
+
+        assert candidates[0]["url"] == "https://example.com/clip.wav"
+
+
+class TestScriptScanEndpoint:
+    URL = "/api/v1/scripts/scan"
+
+    def test_scans_utf8_text_file(self):
+        response = client.post(
+            self.URL,
+            files={"script_file": ("scene.txt", "Music plays https://example.com/track.mp3", "text/plain")},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["candidate_count"] == 1
+        assert response.json()["candidates"][0]["likely_audio"] is True
+
+    def test_rejects_unsupported_file_type(self):
+        response = client.post(
+            self.URL,
+            files={"script_file": ("scene.pdf", b"not a text script", "application/pdf")},
+        )
+
+        assert response.status_code == 400
+
+    def test_rejects_non_utf8_text_file(self):
+        response = client.post(
+            self.URL,
+            files={"script_file": ("scene.txt", b"\xff\xfe", "text/plain")},
+        )
+
+        assert response.status_code == 400
 
 # ---------------------------------------------------------------------------
 # Fixtures / shared helpers
@@ -101,6 +161,24 @@ class TestRequestValidation:
             )
         assert resp.status_code == 200
 
+    def test_url_markers_classify_explicit_free_sources(self):
+        assert _is_royalty_free_url("https://example.com/royalty-free/track.mp3") is True
+        assert _is_royalty_free_url("https://example.com/public-domain/track.mp3") is True
+        assert _is_royalty_free_url("https://example.com/commercial/track.mp3") is False
+
+    def test_explicit_free_url_skips_audd_and_returns_zero_fees(self):
+        with patch("main._query_audd") as query_audd:
+            response = client.post(
+                "/api/v1/clearance/audio",
+                json={"audio_url": "https://example.com/freemusic/track.mp3"},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["royalty_free"] is True
+        assert response.json()["total_fee_usd"] == 0.0
+        assert len(response.json()["licenses"]) == 2
+        query_audd.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Successful clearance response shape
@@ -162,6 +240,26 @@ class TestSuccessfulClearance:
 
     def test_version_present(self):
         assert self._post().json()["version"] == "1.0.0"
+
+    def test_audio_contract_draft_present(self):
+        import base64
+        from pypdf import PdfReader
+        from io import BytesIO
+
+        draft = self._post().json()["contract_draft"]
+        assert draft["content_type"] == "application/pdf"
+        assert draft["data_base64"]
+        pdf_bytes = base64.b64decode(draft["data_base64"])
+        assert pdf_bytes.startswith(b"%PDF-")
+        assert len(PdfReader(BytesIO(pdf_bytes)).pages) == 1
+
+    def test_audio_contract_draft_mentions_track(self):
+        import base64
+
+        draft = self._post().json()["contract_draft"]
+        contract_text = base64.b64decode(draft["data_base64"]).decode("utf-8")
+        assert "AUDIO CLEARANCE AGREEMENT" in contract_text
+        assert "Blinding Lights" in contract_text
 
 
 # ---------------------------------------------------------------------------
@@ -263,178 +361,6 @@ class TestExtractMatch:
         }
         match = _extract_match(payload)
         assert match.apple_music_link is None
-
-
-# ---------------------------------------------------------------------------
-# Asset clearance — POST /api/v1/clearance/asset
-# ---------------------------------------------------------------------------
-
-
-class TestAssetClearanceSubmit:
-    URL = "/api/v1/clearance/asset"
-
-    def _post(self, body: dict):
-        return client.post(self.URL, json=body)
-
-    # ── Validation ──────────────────────────────────────────────────────────
-
-    def test_rejects_missing_asset_name(self):
-        assert self._post({"timestamp": "00:01:00"}).status_code == 422
-
-    def test_rejects_missing_timestamp(self):
-        assert self._post({"asset_name": "Nike Logo"}).status_code == 422
-
-    def test_rejects_empty_asset_name(self):
-        assert self._post({"asset_name": "", "timestamp": "00:01:00"}).status_code == 422
-
-    # ── Known asset (Nike → high risk) ──────────────────────────────────────
-
-    def test_returns_200_for_known_asset(self):
-        resp = self._post({"asset_name": "Nike Swoosh", "timestamp": "00:02:15"})
-        assert resp.status_code == 200
-
-    def test_status_is_pending_human_approval(self):
-        resp = self._post({"asset_name": "Nike Swoosh", "timestamp": "00:02:15"})
-        assert resp.json()["status"] == "pending_human_approval"
-
-    def test_clearance_id_present(self):
-        resp = self._post({"asset_name": "Nike Swoosh", "timestamp": "00:02:15"})
-        cid = resp.json().get("clearance_id", "")
-        assert cid.startswith("clr_")
-
-    def test_risk_level_high_for_nike(self):
-        resp = self._post({"asset_name": "Nike logo on hoodie", "timestamp": "00:00:30"})
-        assert resp.json()["risk_level"] == "high"
-
-    def test_estimated_fee_high_risk(self):
-        resp = self._post({"asset_name": "Nike logo", "timestamp": "00:00:30"})
-        assert resp.json()["estimated_fee_usd"] == 25_000.0
-
-    def test_matched_record_returned(self):
-        resp = self._post({"asset_name": "Nike logo", "timestamp": "00:00:30"})
-        assert resp.json()["matched_record"] is not None
-        assert resp.json()["matched_record"]["rights_holder"] == "Nike, Inc."
-
-    def test_pdf_draft_present(self):
-        resp = self._post({"asset_name": "Nike logo", "timestamp": "00:00:30"})
-        pdf = resp.json()["pdf_draft"]
-        assert pdf["content_type"] == "application/pdf"
-        assert pdf["data_base64"]
-        assert pdf["page_count"] == 1
-
-    def test_pdf_filename_has_draft_suffix(self):
-        resp = self._post({"asset_name": "Nike logo", "timestamp": "00:00:30"})
-        assert "_draft.pdf" in resp.json()["pdf_draft"]["filename"]
-
-    def test_message_contains_approve_instruction(self):
-        resp = self._post({"asset_name": "Nike logo", "timestamp": "00:00:30"})
-        assert "approve" in resp.json()["message"].lower()
-
-    # ── Unknown asset (falls back to medium risk) ────────────────────────────
-
-    def test_unknown_asset_returns_medium_risk(self):
-        resp = self._post({"asset_name": "Random Brand XYZ", "timestamp": "00:05:00"})
-        assert resp.json()["risk_level"] == "medium"
-
-    def test_unknown_asset_fee_is_10000(self):
-        resp = self._post({"asset_name": "Totally Unknown Brand", "timestamp": "00:05:00"})
-        assert resp.json()["estimated_fee_usd"] == 10_000.0
-
-    def test_unknown_asset_matched_record_is_none(self):
-        resp = self._post({"asset_name": "Totally Unknown Brand 999", "timestamp": "00:05:00"})
-        assert resp.json()["matched_record"] is None
-
-    # ── Production title optional field ─────────────────────────────────────
-
-    def test_custom_production_title_accepted(self):
-        resp = self._post({
-            "asset_name": "Starbucks cup",
-            "timestamp": "00:10:00",
-            "production_title": "My Indie Film",
-        })
-        assert resp.status_code == 200
-
-
-# ---------------------------------------------------------------------------
-# Asset clearance — POST /api/v1/clearance/approve
-# ---------------------------------------------------------------------------
-
-
-class TestAssetClearanceApprove:
-    ASSET_URL   = "/api/v1/clearance/asset"
-    APPROVE_URL = "/api/v1/clearance/approve"
-
-    def _submit(self, asset_name="Nike logo", timestamp="00:01:00") -> str:
-        """Submit a clearance and return the clearance_id."""
-        resp = client.post(self.ASSET_URL, json={"asset_name": asset_name, "timestamp": timestamp})
-        assert resp.status_code == 200
-        return resp.json()["clearance_id"]
-
-    def _approve(self, clearance_id: str, name="Jane Smith", notes=None):
-        body = {"clearance_id": clearance_id, "approver_name": name}
-        if notes:
-            body["approver_notes"] = notes
-        return client.post(self.APPROVE_URL, json=body)
-
-    # ── Happy path ───────────────────────────────────────────────────────────
-
-    def test_approve_returns_200(self):
-        cid = self._submit()
-        assert self._approve(cid).status_code == 200
-
-    def test_approved_status(self):
-        cid = self._submit()
-        assert self._approve(cid).json()["status"] == "approved"
-
-    def test_approver_name_echoed(self):
-        cid = self._submit()
-        resp = self._approve(cid, name="John Doe")
-        assert resp.json()["approver_name"] == "John Doe"
-
-    def test_approver_notes_echoed(self):
-        cid = self._submit()
-        resp = self._approve(cid, notes="Festival use only.")
-        assert resp.json()["approver_notes"] == "Festival use only."
-
-    def test_approved_at_present(self):
-        cid = self._submit()
-        assert self._approve(cid).json()["approved_at"]
-
-    def test_final_pdf_present(self):
-        cid = self._submit()
-        pdf = self._approve(cid).json()["pdf_final"]
-        assert pdf["content_type"] == "application/pdf"
-        assert pdf["data_base64"]
-
-    def test_final_pdf_filename_has_approved_suffix(self):
-        cid = self._submit()
-        pdf = self._approve(cid).json()["pdf_final"]
-        assert "_approved.pdf" in pdf["filename"]
-
-    def test_message_contains_approver_name(self):
-        cid = self._submit()
-        resp = self._approve(cid, name="Alice")
-        assert "Alice" in resp.json()["message"]
-
-    # ── Error cases ──────────────────────────────────────────────────────────
-
-    def test_unknown_clearance_id_returns_404(self):
-        resp = client.post(self.APPROVE_URL, json={
-            "clearance_id": "clr_doesnotexist",
-            "approver_name": "Bob",
-        })
-        assert resp.status_code == 404
-
-    def test_double_approve_returns_409(self):
-        cid = self._submit()
-        self._approve(cid)                    # first approval — OK
-        resp = self._approve(cid)             # second approval — conflict
-        assert resp.status_code == 409
-
-    def test_missing_approver_name_returns_422(self):
-        cid = self._submit()
-        resp = client.post(self.APPROVE_URL, json={"clearance_id": cid})
-        assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------------------
